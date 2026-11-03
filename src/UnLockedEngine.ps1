@@ -54,21 +54,21 @@ function Get-UnLockDestination {
     param($Item, [hashtable]$Options)
     if ($Options.OutputMode -eq 'InPlace') { return $Item.Path }
     $root = $Options.OutputFolder
-    if (-not $root) { $root = Join-Path $Item.BaseDir '_UnLocked_Output' }
-    Join-Path $root (Get-UnLockedRelativePath $Item.Path $Item.BaseDir)
+    if (-not $root) { $root = [IO.Path]::Combine($Item.BaseDir, '_UnLocked_Output') }
+    [IO.Path]::Combine($root, (Get-UnLockedRelativePath $Item.Path $Item.BaseDir))
 }
 
 function Get-UnLockBackupPath {
     param($Item, [hashtable]$Options, [string]$RunStamp)
     $root = $Options.BackupFolder
-    if (-not $root) { $root = Join-Path $Item.BaseDir ('_UnLocked_Backup_' + $RunStamp) }
-    Join-Path $root (Get-UnLockedRelativePath $Item.Path $Item.BaseDir)
+    if (-not $root) { $root = [IO.Path]::Combine($Item.BaseDir, '_UnLocked_Backup_' + $RunStamp) }
+    [IO.Path]::Combine($root, (Get-UnLockedRelativePath $Item.Path $Item.BaseDir))
 }
 
 function Initialize-ParentFolder {
     param([string]$Path)
-    $dir = Split-Path -Parent $Path
-    if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $dir = [IO.Path]::GetDirectoryName($Path)
+    if ($dir -and -not [IO.Directory]::Exists($dir)) { [void][IO.Directory]::CreateDirectory($dir) }
 }
 
 function Move-UnLockFileOver {
@@ -264,7 +264,7 @@ function Invoke-UnLockFile {
         $inPlace = [string]::Equals([IO.Path]::GetFullPath($dest), [IO.Path]::GetFullPath($path), [StringComparison]::OrdinalIgnoreCase)
         if ($needSave) {
             Initialize-ParentFolder $dest
-            $tmp = Join-Path (Split-Path -Parent $dest) ([IO.Path]::GetFileNameWithoutExtension($dest) + '.~unlocked' + $ext)
+            $tmp = [IO.Path]::Combine([IO.Path]::GetDirectoryName($dest), [IO.Path]::GetFileNameWithoutExtension($dest) + '.~unlocked' + $ext)
             if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force }
             Save-OfficeDocumentAs -AppEntry $entry -Doc $doc -Target $tmp
             Close-OfficeDocument -AppEntry $entry -Doc $doc
