@@ -89,6 +89,18 @@ namespace UnLocked
             try { SetProcessDPIAware(); } catch (Exception) { }
         }
 
+        [DllImport("user32.dll")]
+        static extern bool SetForegroundWindow(IntPtr hWnd);
+
+        /// <summary>把 Office 視窗帶到最前面，讓使用者看得到登入／權限提示。</summary>
+        public static void BringToFront(long hwnd)
+        {
+            if (hwnd == 0) return;
+            IntPtr h = new IntPtr(hwnd);
+            ShowWindow(h, 9);   // SW_RESTORE
+            SetForegroundWindow(h);
+        }
+
         public static int GetPidFromHwnd(long hwnd)
         {
             if (hwnd == 0) return 0;

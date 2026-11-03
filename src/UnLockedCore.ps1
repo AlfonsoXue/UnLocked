@@ -90,6 +90,7 @@ function Get-UnLockedDefaultConfig {
         SetLabel         = $true
         RemoveIrm        = $true
         Repair           = $true
+        IrmInteractive   = $true      # IRM 檔案背景開啟失敗時，顯示 Office 視窗重試
         OutputMode       = 'Folder'   # Folder = 另存到輸出資料夾；InPlace = 覆寫原檔
         OutputFolder     = ''
         Backup           = $true
@@ -145,6 +146,69 @@ function Add-UnLockedLabelToConfig {
     $list = @($Config.Labels | Where-Object { $_.Id -ne $Label.Id })
     $Config.Labels = @($list + $Label)
     $Config.SelectedLabelId = $Label.Id
+}
+
+# ----------------------------------------------------------------------------
+#  標籤名稱快取：新版標籤中繼資料只有 GUID；在 IRM 發佈授權中看過的名稱記下來，之後顯示名稱
+# ----------------------------------------------------------------------------
+$script:LabelNameCache = $null
+
+function Get-LabelNameCachePath { Join-Path (Split-Path -Parent (Get-UnLockedUserConfigPath)) 'labelnames.json' }
+
+function Get-LabelNameCache {
+    if ($null -eq $script:LabelNameCache) {
+        $script:LabelNameCache = @{}
+        $p = Get-LabelNameCachePath
+        if (Test-Path -LiteralPath $p) {
+            try {
+                $j = [IO.File]::ReadAllText($p, [Text.Encoding]::UTF8) | ConvertFrom-Json
+                foreach ($prop in $j.PSObject.Properties) { $script:LabelNameCache[$prop.Name] = [string]$prop.Value }
+            }
+            catch { }
+        }
+    }
+    $script:LabelNameCache
+}
+
+function Add-LabelNameToCache {
+    param([string]$Id, [string]$Name)
+    if (-not $Id -or -not $Name -or $Name -eq $Id) { return }
+    $cache = Get-LabelNameCache
+    if ($cache.ContainsKey($Id) -and $cache[$Id] -eq $Name) { return }
+    $cache[$Id] = $Name
+    try {
+        $p = Get-LabelNameCachePath
+        $dir = Split-Path -Parent $p
+        if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        [IO.File]::WriteAllText($p, ([pscustomobject]$cache | ConvertTo-Json), (New-Object Text.UTF8Encoding($true)))
+    }
+    catch { }
+}
+
+# ----------------------------------------------------------------------------
+#  檔案鎖定
+# ----------------------------------------------------------------------------
+function Test-UnLockedSharingViolation {
+    <# 是否為「檔案正被其他程式使用」(ERROR_SHARING_VIOLATION / ERROR_LOCK_VIOLATION) #>
+    param($ErrorRecord)
+    $ex = $ErrorRecord
+    if ($ex -is [System.Management.Automation.ErrorRecord]) { $ex = $ex.Exception }
+    while ($ex) {
+        if ($ex.HResult -in @(-2147024864, -2147024863)) { return $true }
+        $ex = $ex.InnerException
+    }
+    return $false
+}
+
+function Test-UnLockedFileLocked {
+    <# 檔案是否正被其他程式開啟（例如 Excel）。沒有寫入權限等其他錯誤不算鎖定。 #>
+    param([string]$Path)
+    try {
+        $fs = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        $fs.Close()
+        return $false
+    }
+    catch { return (Test-UnLockedSharingViolation $_) }
 }
 
 # ----------------------------------------------------------------------------
@@ -229,7 +293,26 @@ function Format-InspectionSummary {
     if (-not $text) { $text = $Inspection.Status }
     if ($Inspection.Issues.Count -gt 0) { $text += '：' + $Inspection.IssueText }
     elseif ($Inspection.Warnings.Count -gt 0) { $text += '（' + $Inspection.WarningText + '）' }
+    elseif ($Inspection.Status -eq 'PROTECTED') {
+        $text += Format-ProtectionSource $Inspection
+    }
     $text
+}
+
+function Format-ProtectionSource {
+    <# 例：（標籤「Internal - Internal (EVA)」加密，Azure RMS）或（AD RMS：rms.contoso.com） #>
+    param($Inspection)
+    $d = @()
+    if ($Inspection.LabelId) {
+        $n = if ($Inspection.LabelName) { $Inspection.LabelName } else { $Inspection.LabelId }
+        $d += ('標籤「{0}」{1}' -f $n, $(if ($Inspection.LabelEncrypts) { '加密' } else { '' }))
+        if ($Inspection.RmsKind) { $d += $Inspection.RmsKind }
+    }
+    elseif ($Inspection.RmsKind) {
+        $d += ('{0}：{1}' -f $Inspection.RmsKind, $Inspection.RmsServer)
+    }
+    if ($d.Count) { return '（' + ($d -join '，') + '）' }
+    return ''
 }
 
 function Get-UnLockedRelativePath {
@@ -327,9 +410,11 @@ function Get-FriendlyError {
             $ex -is [System.Reflection.TargetInvocationException])) {
         $ex = $ex.InnerException
     }
-    $msg = $ex.Message -replace '\s+', ' '
+    $msg = ($ex.Message -replace '\s+', ' ').Trim()
+    $hr = Get-ComHResult $ErrorRecord
+    if ($hr) { $msg += ' [0x{0:X8}]' -f $hr }
     if (Test-OfficeDisconnected $ErrorRecord) { $msg = 'Office 程式已中斷或被關閉（' + $msg + '）' }
-    $msg.Trim()
+    $msg
 }
 
 function New-OfficeApp {
@@ -426,9 +511,12 @@ function Open-OfficeDocument {
     <#
         RepairMode：Normal = 一般開啟；Repair = 開啟並修復；Extract = 只擷取資料（僅 Excel）
     #>
-    param($AppEntry, [string]$Path, [ValidateSet('Normal', 'Repair', 'Extract')][string]$RepairMode = 'Normal', [bool]$ReadOnly = $false)
+    param($AppEntry, [string]$Path, [ValidateSet('Normal', 'Repair', 'Extract')][string]$RepairMode = 'Normal', [bool]$ReadOnly = $false,
+        [bool]$UsePassword = $true, [bool]$Interactive = $false)
     $m = [Type]::Missing
-    $pw = $script:DummyPassword   # 假密碼：避免有密碼的檔案跳出輸入視窗而卡住
+    # 假密碼：避免有密碼的檔案跳出看不見的輸入視窗而卡住。
+    # 受 IRM 保護的檔案不可傳入密碼（Office 會改用密碼解密而開啟失敗），由呼叫端以 -UsePassword $false 關閉。
+    $pw = if ($UsePassword) { $script:DummyPassword } else { $m }
     $app = $AppEntry.App
     switch ($AppEntry.Kind) {
         'Excel' {
@@ -442,14 +530,41 @@ function Open-OfficeDocument {
             $repair = ($RepairMode -eq 'Repair')
             # Open(FileName, ConfirmConversions, ReadOnly, AddToRecentFiles, PasswordDocument, PasswordTemplate, Revert,
             #      WritePasswordDocument, WritePasswordTemplate, Format, Encoding, Visible, OpenAndRepair, DocumentDirection, NoEncodingDialog)
-            return $app.Documents.Open($Path, $false, $ReadOnly, $false, $pw, $pw, $false, $pw, $pw, $m, $m, $false, $repair, $m, $true)
+            return $app.Documents.Open($Path, $false, $ReadOnly, $false, $pw, $pw, $false, $pw, $pw, $m, $m, $Interactive, $repair, $m, $true)
         }
         'PowerPoint' {
             if ($RepairMode -eq 'Extract') { throw 'PowerPoint 不支援僅擷取資料模式' }
             $repair = if ($RepairMode -eq 'Repair') { -1 } else { 0 }       # MsoTriState
             $ro = if ($ReadOnly) { -1 } else { 0 }
+            $win = if ($Interactive) { -1 } else { 0 }
             # Open2007(FileName, ReadOnly, Untitled, WithWindow, OpenAndRepair)
-            return $app.Presentations.Open2007($Path, $ro, 0, 0, $repair)
+            return $app.Presentations.Open2007($Path, $ro, 0, $win, $repair)
+        }
+    }
+}
+
+function Set-OfficeInteractive {
+    <#
+        切換 Office 為「互動模式」（顯示視窗與提示）或「背景模式」。
+        受 IRM 保護的檔案第一次開啟時，Office 可能需要登入或選擇權限帳戶，背景模式無法顯示這些視窗。
+    #>
+    param($AppEntry, [bool]$On)
+    $app = $AppEntry.App
+    switch ($AppEntry.Kind) {
+        'Excel' {
+            $app.ScreenUpdating = $On
+            $app.Visible = $On
+            $app.DisplayAlerts = $On
+            if ($On) { try { [UnLocked.NativeMethods]::BringToFront([long]$app.Hwnd) } catch { } }
+        }
+        'Word' {
+            $app.Visible = $On
+            $app.DisplayAlerts = if ($On) { -1 } else { 0 }     # wdAlertsAll / wdAlertsNone
+            if ($On) { try { $app.Activate() } catch { } }
+        }
+        'PowerPoint' {
+            $app.DisplayAlerts = if ($On) { 2 } else { 1 }      # ppAlertsAll / ppAlertsNone
+            if ($On) { try { $app.Activate() } catch { } }
         }
     }
 }
@@ -560,31 +675,49 @@ function Remove-DocumentIrm {
 function Read-LabelFromSampleFile {
     <#
         從「已手動套用目標標籤」的範例檔讀出標籤 ID 與租用戶 ID。
-        先直接解析檔案（不需 Office）；若檔案受保護或缺少名稱，再用 Office 讀取。
+        先直接解析檔案（不需 Office，包含受 IRM 保護的檔案）；檔案結構中找不到標籤時才用 Office 讀取。
+        回傳的物件多一個 Encrypts 屬性：該標籤是否會加密檔案（不適合當成解除權限的目標標籤）。
     #>
     param([Parameter(Mandatory)][string]$Path)
     Initialize-UnLocked
     $ins = Invoke-UnLockedInspection $Path
-    $label = $null
-    if ($ins.LabelId) { $label = New-UnLockedLabel -Name $ins.LabelName -Id $ins.LabelId -SiteId $ins.LabelSiteId }
-    if ($label -and $label.Name -and $label.SiteId) { return $label }
+    if ($ins.LabelId) {
+        # 新版標籤中繼資料不含名稱；名稱由使用者在確認視窗中填寫即可，不需要再開 Office
+        $label = New-UnLockedLabel -Name $ins.LabelName -Id $ins.LabelId -SiteId $ins.LabelSiteId
+        $label | Add-Member -NotePropertyName Encrypts -NotePropertyValue ([bool]$ins.LabelEncrypts)
+        return $label
+    }
+    if ($ins.Status -in @('CORRUPT', 'ERROR', 'PASSWORD')) {
+        throw ('無法讀取範例檔：' + (Format-InspectionSummary $ins))
+    }
 
     $kind = Get-UnLockedKind $Path
     $session = @{}
+    $label = $null
     try {
         $entry = Get-OfficeApp -Session $session -Kind $kind
-        $doc = Open-OfficeDocument -AppEntry $entry -Path $Path -ReadOnly $true
+        $usePw = -not $ins.IrmProtected
+        $doc = $null
+        try { $doc = Open-OfficeDocument -AppEntry $entry -Path $Path -ReadOnly $true -UsePassword $usePw }
+        catch {
+            if (-not ($ins.IrmProtected -or $ins.Status -eq 'UNKNOWN')) { throw }
+            # 受保護的檔案：顯示 Office 視窗重試（可能需要登入或選擇權限帳戶）
+            Set-OfficeInteractive -AppEntry $entry -On $true
+            try { $doc = Open-OfficeDocument -AppEntry $entry -Path $Path -ReadOnly $true -UsePassword $usePw -Interactive $true }
+            finally { try { Set-OfficeInteractive -AppEntry $entry -On $false } catch { } }
+        }
         try {
             $l = Get-DocumentLabel $doc
             if ($l -and $l.Id) {
-                $name = $l.Name
-                if (-not $name -and $label) { $name = $label.Name }
-                $site = $l.SiteId
-                if (-not $site -and $label) { $site = $label.SiteId }
-                $label = New-UnLockedLabel -Name $name -Id $l.Id -SiteId $site
+                $label = New-UnLockedLabel -Name $l.Name -Id $l.Id -SiteId $l.SiteId
+                $label | Add-Member -NotePropertyName Encrypts -NotePropertyValue $false
             }
         }
         finally { Close-OfficeDocument -AppEntry $entry -Doc $doc }
+    }
+    catch {
+        throw (('Office 無法開啟範例檔（{0}）。請改用一個「沒有加密」的範例檔：在 Excel 新增或開啟一個檔案，' +
+                '設定「敏感度 → Public → Public-Edit」後儲存到本機（例如桌面），再選擇該檔案。') -f (Get-FriendlyError $_))
     }
     finally { Close-OfficeSession $session }
     $label

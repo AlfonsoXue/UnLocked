@@ -67,7 +67,7 @@ Write-Host ("視窗 {0}x{1}；檔案清單高 {2}；處理選項高 {3}；匯出
 if ($listH -lt 150 * $scale) { $problems += "檔案清單太矮（$listH px）" }
 if ($optH -gt 230 * $scale) { $problems += "「② 處理選項」太高（$optH px）" }
 if ($expH -gt 150 * $scale) { $problems += "「③ 匯出路徑」太高（$expH px）" }
-foreach ($b in @($script:ui.CheckBtn, $script:ui.StartBtn, $script:ui.ExportBtn, $script:ui.BrowseBtn)) {
+foreach ($b in @($script:ui.CheckBtn, $script:ui.StartBtn, $script:ui.ExportBtn, $script:ui.BrowseBtn, $script:ui.OptInteractive)) {
     $pt = $form.PointToClient($b.PointToScreen((New-Object System.Drawing.Point(0, 0))))
     if ($pt.X + $b.Width -gt $form.ClientSize.Width) { $problems += "按鈕「$($b.Text)」超出視窗寬度" }
 }

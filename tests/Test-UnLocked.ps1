@@ -63,6 +63,10 @@ foreach ($case in $expected.PSObject.Properties) {
         }
     }
 }
+$lab = Format-InspectionSummary (Invoke-UnLockedInspection (Join-Path $fixtures 'irm_label.xlsx'))
+Assert-That ($lab.Contains('Internal - Internal (Contoso)') -and $lab.Contains('加密') -and $lab.Contains('Azure RMS')) 'IRM 標籤加密來源摘要' $lab
+$adr = Format-InspectionSummary (Invoke-UnLockedInspection (Join-Path $fixtures 'irm_adrms.xlsx'))
+Assert-That ($adr.Contains('AD RMS') -and $adr.Contains('rms.contoso.example')) 'AD RMS 來源摘要' $adr
 $ok = Invoke-UnLockedInspection (Join-Path $fixtures 'valid.xlsx')
 Assert-That ($ok.Issues.Count -eq 0 -and $ok.Warnings.Count -eq 0) 'valid.xlsx 沒有任何問題或警告' ($ok.IssueText + $ok.WarningText)
 Assert-That ((Invoke-UnLockedInspection (Join-Path $fixtures 'not-exist.xlsx')).Status -eq 'ERROR') '不存在的檔案 → ERROR'
@@ -92,9 +96,21 @@ Assert-That ((Resolve-UnLockLabelName '6f1c2c49-6b5a-4d1e-9a51-7a3c1e0d4b21' 'Pu
 $dest = Get-UnLockDestination -Item ([pscustomobject]@{ Path = 'C:\data\sub\a.xlsx'; BaseDir = 'C:\data' }) -Options @{ OutputMode = 'Folder'; OutputFolder = 'E:\out' }
 Assert-That ($dest -eq 'E:\out\sub\a.xlsx') "輸出路徑（實際 ${dest}）"
 
+$comEx = New-Object System.Runtime.InteropServices.COMException('無法取得類別 Workbooks 的 Open 屬性', -2146827284)
+$friendly = Get-FriendlyError (New-Object System.Management.Automation.ErrorRecord($comEx, 'Open', 'NotSpecified', $null))
+Assert-That ($friendly.Contains('[0x800A03EC]') -and $friendly.Contains('Workbooks')) 'Get-FriendlyError 附上錯誤碼' $friendly
+$openParams = (Get-Command Open-OfficeDocument).Parameters
+Assert-That ($openParams.ContainsKey('UsePassword') -and $openParams.ContainsKey('Interactive')) 'Open-OfficeDocument 支援 UsePassword／Interactive'
+Assert-That ([bool](Get-UnLockedDefaultConfig).IrmInteractive) '預設開啟 IRM 互動重試'
+
 Write-Host '== 範例檔標籤讀取（不需 Office） ==' -ForegroundColor Cyan
 $l = Read-LabelFromSampleFile -Path (Join-Path $fixtures 'labeled.xlsx')
 Assert-That ($l.Id -eq '6f1c2c49-6b5a-4d1e-9a51-7a3c1e0d4b21' -and $l.SiteId -eq '0e6c3c7a-1b2d-4c5e-8f90-a1b2c3d4e5f6' -and $l.Name -eq 'Public-Edit') 'Read-LabelFromSampleFile'
+Assert-That (-not $l.Encrypts) 'Read-LabelFromSampleFile：不加密的標籤'
+$l2 = Read-LabelFromSampleFile -Path (Join-Path $fixtures 'irm_label.xlsx')
+Assert-That ($l2.Id -eq '6f1c2c49-6b5a-4d1e-9a51-7a3c1e0d4b21' -and $l2.Encrypts -and $l2.Name -eq 'Internal - Internal (Contoso)') 'Read-LabelFromSampleFile：IRM 檔案直接讀出標籤（不需 Office）並標示會加密'
+$retryCmd = Get-Command Invoke-UnLockFile
+Assert-That ($null -ne $retryCmd -and $null -ne (Get-Command Invoke-UnLockFileOnce)) '自動第二次處理的包裝函式存在'
 
 Write-Host '== 檢查模式批次（不需 Office） ==' -ForegroundColor Cyan
 $sync = New-UnLockSync
@@ -107,10 +123,55 @@ Assert-That ($byName['valid.xlsx'].Result -eq '正常') 'valid.xlsx → 正常'
 Assert-That ($byName['crc.xlsx'].Result -eq '需修復') 'crc.xlsx → 需修復'
 Assert-That ($byName['password.xlsx'].Result -eq '略過') 'password.xlsx → 略過'
 Assert-That ($byName['irm.xlsx'].IrmBefore -eq '受限制') 'irm.xlsx → 受限制'
+Assert-That ($byName['irm_label.xlsx'].LabelBefore -eq 'Internal - Internal (Contoso)') 'IRM 檔案的原標籤取自容器內的標籤資訊' $byName['irm_label.xlsx'].LabelBefore
 $csv = Join-Path ([IO.Path]::GetTempPath()) ('unlocked_test_{0}.csv' -f [guid]::NewGuid().ToString('N'))
 Export-UnLockReport -Results $res -Path $csv
 Assert-That (@(Import-Csv -LiteralPath $csv -Encoding UTF8).Count -eq $fixtureCount) '匯出 CSV 報表'
 Remove-Item -LiteralPath $csv -Force
+
+Write-Host '== 檔案鎖定與不需 Office 的處理 ==' -ForegroundColor Cyan
+$work = Join-Path ([IO.Path]::GetTempPath()) ('unlocked_test_' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $work | Out-Null
+try {
+    $f = Join-Path $work 'locked.xlsx'
+    Copy-Item (Join-Path $fixtures 'valid.xlsx') $f
+    Assert-That (-not (Test-UnLockedFileLocked $f)) '未開啟的檔案不算鎖定'
+    $hold = [IO.File]::Open($f, 'Open', 'Read', 'Read')
+    try {
+        Assert-That (Test-UnLockedFileLocked $f) '被其他程式開啟的檔案偵測為鎖定'
+        $src = Join-Path $work 'new.xlsx'
+        Copy-Item (Join-Path $fixtures 'valid.docx') $src
+        Assert-That (-not (Move-UnLockFileOver -Source $src -Destination $f -Retries 2)) '目標檔被鎖住時取代失敗並回傳 false'
+        Assert-That (Test-Path $src) '取代失敗時保留處理結果'
+    }
+    finally { $hold.Close() }
+    Assert-That ((Get-UnLockAlternatePath $f) -like '*locked_無限制存取.xlsx') '另存檔名' (Get-UnLockAlternatePath $f)
+
+    $out = Join-Path $work 'out'
+    $items2 = @(Get-UnLockedFileItems -Paths @((Join-Path $fixtures 'valid.xlsx'), (Join-Path $fixtures 'valid.docx'), (Join-Path $fixtures 'valid.pptx')))
+    $res2 = @(Invoke-UnLockBatch -Items $items2 -Options @{ Mode = 'Process'; SetLabel = $false; RemoveIrm = $true; Repair = $true; OutputMode = 'Folder'; OutputFolder = $out } -Sync (New-UnLockSync))
+    Assert-That (@($res2 | Where-Object { $_.Result -eq '無需變更' -and $_.Output -and (Test-Path $_.Output) }).Count -eq 3) '已無限制且正常的檔案不開 Office，直接複製到匯出資料夾' (($res2 | ForEach-Object { $_.Result + ':' + $_.Message }) -join ' | ')
+
+    $known = New-UnLockedLabel -Name 'Public\Public-Edit' -Id '6f1c2c49-6b5a-4d1e-9a51-7a3c1e0d4b21' -SiteId ''
+    $res3 = @(Invoke-UnLockBatch -Items @(Get-UnLockedFileItems -Paths @(Join-Path $fixtures 'labeled.xlsx')) -Options @{ Mode = 'Process'; SetLabel = $true; Label = $known; RemoveIrm = $true; OutputMode = 'Folder'; OutputFolder = $out } -Sync (New-UnLockSync))
+    Assert-That ($res3[0].Result -eq '無需變更' -and $res3[0].LabelAfter -eq 'Public\Public-Edit') '標籤已是目標標籤時不開 Office' ($res3[0].Result + ':' + $res3[0].Message)
+
+    $irmCopy = Join-Path $work 'irm_copy.xlsx'
+    Copy-Item (Join-Path $fixtures 'irm.xlsx') $irmCopy
+    $hold = [IO.File]::Open($irmCopy, 'Open', 'Read', 'Read')
+    try {
+        $res4 = @(Invoke-UnLockBatch -Items @(Get-UnLockedFileItems -Paths @($irmCopy)) -Options @{ Mode = 'Process'; RemoveIrm = $true; OutputMode = 'InPlace'; Backup = $true } -Sync (New-UnLockSync))
+        Assert-That ($res4[0].Result -eq '略過' -and $res4[0].Message -like '*正被其他程式使用*') '覆寫模式下原檔被開啟時先略過，不啟動 Office' ($res4[0].Result + ':' + $res4[0].Message)
+    }
+    finally { $hold.Close() }
+
+    Add-LabelNameToCache -Id '11111111-2222-3333-4444-555555555555' -Name '測試標籤'
+    $script:LabelNameCache = $null
+    Assert-That ((Resolve-UnLockLabelName '11111111-2222-3333-4444-555555555555' '' @()) -eq '測試標籤') '標籤名稱快取會保存並讀回'
+}
+finally {
+    Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+}
 
 Write-Host ''
 Write-Host ("通過 {0}，失敗 {1}" -f $script:Passed, $script:Failures) -ForegroundColor $(if ($script:Failures) { 'Red' } else { 'Green' })

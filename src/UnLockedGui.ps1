@@ -152,6 +152,13 @@ function Invoke-ReadSampleLabel {
         Show-Info '這個檔案沒有敏感度標籤。請先在 Office 中手動設定標籤（常用 → 敏感度）並儲存後再試一次。' 'Warning'
         return
     }
+    if ($label.Encrypts) {
+        $ans = [System.Windows.Forms.MessageBox]::Show($script:ui.Form,
+            ("這個範例檔的標籤「{0}」會加密檔案，設成目標標籤後，處理過的檔案會被重新加密。`n`n" +
+                "建議改選一個已套用 Public\Public-Edit 的範例檔。仍要使用這個標籤嗎？") -f $(if ($label.Name) { $label.Name } else { $label.Id }),
+            'UnLocked', 'YesNo', 'Warning')
+        if ($ans -ne 'Yes') { return }
+    }
     if (-not $label.Name) { $label.Name = 'Public\Public-Edit' }
     $label = Show-LabelDialog -Initial $label     # 讓使用者確認／修改顯示名稱
     if ($label) {
@@ -254,6 +261,7 @@ function Update-UiRow {
         '需修復' { [System.Drawing.Color]::DarkOrange }
         '待確認' { [System.Drawing.Color]::DarkOrange }
         '失敗' { [System.Drawing.Color]::Firebrick }
+        '無法開啟' { [System.Drawing.Color]::Firebrick }
         default { [System.Drawing.Color]::DimGray }
     }
     $lvi.ForeColor = $color
@@ -281,6 +289,7 @@ function Save-CurrentConfig {
         $c.Justification = $script:ui.Justification.Text
         $c.RemoveIrm = $script:ui.OptIrm.Checked
         $c.Repair = $script:ui.OptRepair.Checked
+        $c.IrmInteractive = $script:ui.OptInteractive.Checked
         $c.OutputMode = if ($script:ui.OptInPlace.Checked) { 'InPlace' } else { 'Folder' }
         $c.OutputFolder = $script:ui.OutputBox.Text.Trim()
         $c.Backup = $script:ui.OptBackup.Checked
@@ -297,6 +306,7 @@ function Set-UiFromConfig {
     $script:ui.Justification.Text = [string]$c.Justification
     $script:ui.OptIrm.Checked = [bool]$c.RemoveIrm
     $script:ui.OptRepair.Checked = [bool]$c.Repair
+    $script:ui.OptInteractive.Checked = [bool]$c.IrmInteractive
     $script:ui.OptInPlace.Checked = ($c.OutputMode -eq 'InPlace')
     $script:ui.OptFolder.Checked = ($c.OutputMode -ne 'InPlace')
     $script:ui.OutputBox.Text = [string]$c.OutputFolder
@@ -383,6 +393,14 @@ function Start-UnLockedRun {
         if ($script:ui.OptLabel.Checked -and -not $label) {
             Show-Info "尚未設定目標敏感度標籤。`n`n請先在 Office 中把一個檔案手動設為「Public\Public-Edit」並儲存，再按「從範例檔讀取…」選擇該檔案。" 'Warning'; return
         }
+        if ($script:ui.OptIrm.Checked -and -not ($script:ui.OptLabel.Checked -and $label)) {
+            $msg = "尚未設定目標敏感度標籤。`n`n" +
+            "‧ 受敏感度標籤（例如 Internal）加密的檔案，只移除限制存取無法解除加密。`n" +
+            "‧ 沒有標籤的檔案存檔時，Office 可能依公司原則自動套用預設標籤並重新加密。`n`n" +
+            "建議先在 Office 把一個檔案設為 Public\Public-Edit，再按「從範例檔讀取…」設定目標標籤。`n`n仍要繼續嗎？"
+            $ans = [System.Windows.Forms.MessageBox]::Show($script:ui.Form, $msg, 'UnLocked', 'YesNo', 'Warning')
+            if ($ans -ne 'Yes') { return }
+        }
         if ($script:ui.OptFolder.Checked) {
             $out = $script:ui.OutputBox.Text.Trim()
             if (-not $out) { Show-Info '請先在「③ 匯出路徑」選擇匯出資料夾。' 'Warning'; return }
@@ -405,6 +423,7 @@ function Start-UnLockedRun {
         AssignmentMethod = [int]$script:Cfg.AssignmentMethod
         RemoveIrm        = $script:ui.OptIrm.Checked
         Repair           = $script:ui.OptRepair.Checked
+        IrmInteractive   = $script:ui.OptInteractive.Checked
         DeepCheck        = $script:ui.OptDeep.Checked
         OutputMode       = if ($script:ui.OptInPlace.Checked) { 'InPlace' } else { 'Folder' }
         OutputFolder     = $script:ui.OutputBox.Text.Trim()
@@ -581,9 +600,16 @@ function New-UnLockedForm {
             (New-Ctl Label @{ Text = '（公司政策要求調降理由時使用）'; AutoSize = $true; ForeColor = [System.Drawing.Color]::DimGray; Margin = (& $pad 3 8 3 3) }))) { [void]$rowB.Controls.Add($c) }
 
     $rowC = New-Flow
-    $script:ui.OptIrm = New-Ctl CheckBox @{ Text = '移除限制存取（IRM）：設為「無限制存取」'; AutoSize = $true; Margin = (& $pad 3 6 3 3) }
-    $script:ui.OptRepair = New-Ctl CheckBox @{ Text = '偵測檔案是否毀損，並自動修復（Office「開啟並修復」後重新儲存）'; AutoSize = $true; Margin = (& $pad 24 6 3 3) }
-    foreach ($c in @($script:ui.OptIrm, $script:ui.OptRepair)) { [void]$rowC.Controls.Add($c) }
+    $script:ui.OptIrm = New-Ctl CheckBox @{ Text = '移除限制存取（IRM）→ 無限制存取'; AutoSize = $true; Margin = (& $pad 3 6 3 3) }
+    $script:ui.OptRepair = New-Ctl CheckBox @{ Text = '偵測毀損並自動修復'; AutoSize = $true; Margin = (& $pad 20 6 3 3) }
+    $script:ui.OptInteractive = New-Ctl CheckBox @{ Text = '無法在背景開啟時，顯示 Office 視窗重試'; AutoSize = $true; Margin = (& $pad 20 6 3 3) }
+    foreach ($c in @($script:ui.OptIrm, $script:ui.OptRepair, $script:ui.OptInteractive)) { [void]$rowC.Controls.Add($c) }
+    $tips = New-Object System.Windows.Forms.ToolTip
+    $tips.AutoPopDelay = 20000
+    $tips.SetToolTip($script:ui.OptIrm, '等同 Office「保護 → 限制存取 → 無限制存取」。需要您是檔案擁有者或具完整控制權限。')
+    $tips.SetToolTip($script:ui.OptRepair, '先檢查檔案結構；有毀損時以 Office「開啟並修復」開啟並重新儲存（Excel 最後會嘗試只擷取資料）。')
+    $tips.SetToolTip($script:ui.OptInteractive, "受 IRM 保護的檔案第一次開啟時，Office 可能需要登入或選擇權限帳戶；一般檔案開啟失敗時，Office 視窗也會顯示實際的錯誤原因。`n勾選後，背景開啟失敗時會顯示 Office 視窗讓您完成操作，之後自動切回背景繼續處理。")
+    $script:ui.ToolTip = $tips
 
     $rowF = New-Flow
     $script:ui.Timeout = New-Ctl NumericUpDown @{ Minimum = 30; Maximum = 3600; Increment = 30; Value = 180; Width = (ScalePx 70); Margin = (& $pad 3 5 3 3) }

@@ -39,6 +39,7 @@ param(
     [switch]$NoLabel,
     [switch]$NoIrm,
     [switch]$NoRepair,
+    [switch]$NoInteractive,
     [string]$Justification,
     [int]$TimeoutSeconds = 0,
     [switch]$NoRecurse,
@@ -120,6 +121,7 @@ $opts = @{
     AssignmentMethod = [int]$cfg.AssignmentMethod
     RemoveIrm        = -not $NoIrm
     Repair           = -not $NoRepair
+    IrmInteractive   = (-not $NoInteractive) -and [bool]$cfg.IrmInteractive
     DeepCheck        = [bool]$DeepCheck
     OutputMode       = $outMode
     OutputFolder     = $out

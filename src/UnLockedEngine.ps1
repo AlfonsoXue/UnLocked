@@ -46,7 +46,9 @@ function Resolve-UnLockLabelName {
     param([string]$Id, [string]$Name, $Known)
     if (-not $Id) { return '(無標籤)' }
     foreach ($l in @($Known)) { if ($l -and $l.Id -eq $Id -and $l.Name) { return $l.Name } }
-    if ($Name) { return $Name }
+    if ($Name) { Add-LabelNameToCache -Id $Id -Name $Name; return $Name }
+    $cache = Get-LabelNameCache
+    if ($cache.ContainsKey($Id)) { return $cache[$Id] }
     return $Id
 }
 
@@ -72,12 +74,35 @@ function Initialize-ParentFolder {
 }
 
 function Move-UnLockFileOver {
-    param([string]$Source, [string]$Destination)
-    if ([IO.File]::Exists($Destination)) {
-        [IO.File]::SetAttributes($Destination, [IO.FileAttributes]::Normal)
-        [IO.File]::Delete($Destination)
+    <# 以 Source 取代 Destination；目標檔被其他程式鎖住時重試數次，仍失敗則回傳 $false。 #>
+    param([string]$Source, [string]$Destination, [int]$Retries = 5)
+    for ($i = 0; $i -lt $Retries; $i++) {
+        try {
+            if ([IO.File]::Exists($Destination)) {
+                [IO.File]::SetAttributes($Destination, [IO.FileAttributes]::Normal)
+                [IO.File]::Delete($Destination)
+            }
+            [IO.File]::Move($Source, $Destination)
+            return $true
+        }
+        catch {
+            if (-not (Test-UnLockedSharingViolation $_)) { throw }
+            Start-Sleep -Milliseconds 800
+        }
     }
-    [IO.File]::Move($Source, $Destination)
+    return $false
+}
+
+function Get-UnLockAlternatePath {
+    <# 原檔無法取代時的另存檔名：名稱_無限制存取.xlsx、名稱_無限制存取 (2).xlsx … #>
+    param([string]$Path)
+    $dir = [IO.Path]::GetDirectoryName($Path)
+    $base = [IO.Path]::GetFileNameWithoutExtension($Path) + '_無限制存取'
+    $ext = [IO.Path]::GetExtension($Path)
+    $candidate = [IO.Path]::Combine($dir, $base + $ext)
+    $n = 2
+    while ([IO.File]::Exists($candidate)) { $candidate = [IO.Path]::Combine($dir, ('{0} ({1}){2}' -f $base, $n, $ext)); $n++ }
+    $candidate
 }
 
 function New-UnLockResult {
@@ -98,7 +123,7 @@ function New-UnLockResult {
     }
 }
 
-function Invoke-UnLockFile {
+function Invoke-UnLockFileOnce {
     param(
         [Parameter(Mandatory)]$Item,
         [Parameter(Mandatory)][hashtable]$Options,
@@ -117,6 +142,7 @@ function Invoke-UnLockFile {
 
     # ---- 1. 結構檢查 ----------------------------------------------------
     $pre = Invoke-UnLockedInspection $path
+    if ($pre.LabelId -and $pre.LabelName) { Add-LabelNameToCache -Id $pre.LabelId -Name $pre.LabelName }
     $r.Check = Format-InspectionSummary $pre
     if ($pre.Container -in @('OOXML', 'CFB')) { $r.IrmBefore = if ($pre.IrmProtected) { '受限制' } else { '無限制' } }
     if ($pre.LabelId) { $r.LabelBefore = Resolve-UnLockLabelName $pre.LabelId $pre.LabelName $Options.KnownLabels }
@@ -139,39 +165,103 @@ function Invoke-UnLockFile {
         return $r
     }
 
+    if (-not $isCheck) {
+        $dest0 = Get-UnLockDestination -Item $Item -Options $Options
+        $inPlace0 = [string]::Equals([IO.Path]::GetFullPath($dest0), [IO.Path]::GetFullPath($path), [StringComparison]::OrdinalIgnoreCase)
+
+        # 結構正常的 Open XML 檔（ZIP 格式不可能帶 IRM 或開啟密碼）且標籤已符合 → 不需要開 Office
+        $labelOk = (-not ($Options.SetLabel -and $target)) -or ($pre.LabelId -and $pre.LabelId -eq $target.Id)
+        if ($pre.Container -eq 'OOXML' -and $pre.Status -eq 'OK' -and $labelOk -and -not $Options.ForceResave) {
+            $r.IrmAfter = $r.IrmBefore
+            if ($Options.SetLabel -and $target) { $r.LabelAfter = $target.Name }
+            if ($inPlace0) {
+                $r.Message = '檔案已是無限制存取、結構正常，標籤也不需變更'
+            }
+            else {
+                Initialize-ParentFolder $dest0
+                Copy-Item -LiteralPath $path -Destination $dest0 -Force
+                $r.Output = $dest0
+                $r.Message = '檔案已是無限制存取、結構正常，標籤也不需變更，已直接複製到匯出資料夾'
+            }
+            $r.Result = '無需變更'
+            return $r
+        }
+
+        # 覆寫原檔前先確認檔案沒有被其他程式（例如自己開著的 Excel）鎖住
+        if ($inPlace0 -and (Test-UnLockedFileLocked $path)) {
+            $r.Result = '略過'
+            $r.Message = '檔案正被其他程式使用（可能已在 Excel 中開啟），請先關閉這個檔案再處理'
+            return $r
+        }
+    }
+
     # ---- 2. 以 Office 開啟（必要時修復） ---------------------------------
     $entry = $null
     $doc = $null
     $tmp = $null
+    $interactive = $false
     try {
         $entry = Get-OfficeApp -Session $Session -Kind $kind
         $Watchdog.Arm($entry.Pid, [int]$Options.TimeoutSeconds)
         $snapshot = Get-RepairLogSnapshot
 
-        $ladder = @('Normal')
+        # 開啟順序：一般 →（受 IRM 保護時）顯示 Office 視窗重試 → 修復 → 僅擷取資料（Excel）
+        # 受 IRM 保護的檔案不傳假密碼，否則 Office 會改用密碼解密而開啟失敗
+        $protectedLike = $pre.IrmProtected -or $pre.Status -eq 'UNKNOWN'
+        # 假密碼只用在舊版二進位格式（xls/doc/ppt，無法事先判斷是否有密碼）；
+        # Open XML 與 IRM 檔案傳入密碼會讓 Office 開啟失敗（0x800A03EC）
+        $usePw = ($pre.Container -eq 'CFB') -and -not $pre.IrmProtected
+        $canInteract = [bool]$Options.IrmInteractive
+        $attempts = New-Object 'System.Collections.Generic.List[object]'
+        $repairFirst = (-not $isCheck) -and $Options.Repair -and $pre.IsCorrupt
+        if (-not $repairFirst) { $attempts.Add(@{ Mode = 'Normal'; Interactive = $false }) }
+        if ($protectedLike -and $canInteract) { $attempts.Add(@{ Mode = 'Normal'; Interactive = $true }) }
         if (-not $isCheck -and $Options.Repair) {
-            $ladder = if ($pre.IsCorrupt) { @('Repair') } else { @('Normal', 'Repair') }
-            if ($kind -eq 'Excel') { $ladder += 'Extract' }
+            $attempts.Add(@{ Mode = 'Repair'; Interactive = ($protectedLike -and $canInteract) })
+            if ($kind -eq 'Excel') { $attempts.Add(@{ Mode = 'Extract'; Interactive = ($protectedLike -and $canInteract) }) }
         }
+        # 一般檔案：背景方式都失敗時，最後顯示 Office 視窗再試一次，讓使用者看到 Office 的實際訊息
+        if (-not $protectedLike -and $canInteract) { $attempts.Add(@{ Mode = 'Normal'; Interactive = $true }) }
+
         $usedMode = $null
         $openError = $null
-        foreach ($mode in $ladder) {
+        foreach ($a in $attempts) {
+            if ($a.Interactive -and -not $interactive) {
+                Set-OfficeInteractive -AppEntry $entry -On $true
+                $interactive = $true
+                $Watchdog.Arm($entry.Pid, [Math]::Max([int]$Options.TimeoutSeconds, 600))
+                Send-UnLockEvent $Sync 'log' ('  背景開啟失敗，已顯示 {0} 視窗重試：若出現登入、選擇帳戶或權限視窗，請在 Office 視窗中完成操作' -f $kind) -Level Warn
+            }
             try {
-                $doc = Open-OfficeDocument -AppEntry $entry -Path $path -RepairMode $mode -ReadOnly $isCheck
-                if ($doc) { $usedMode = $mode; break }
+                $doc = Open-OfficeDocument -AppEntry $entry -Path $path -RepairMode $a.Mode -ReadOnly $isCheck -UsePassword $usePw -Interactive $a.Interactive
+                if ($doc) { $usedMode = $a.Mode; break }
             }
             catch {
                 if ($Watchdog.Fired -or (Test-OfficeDisconnected $_)) { throw }
                 $openError = $_
-                $modeName = @{ Normal = '一般'; Repair = '修復'; Extract = '擷取資料' }[$mode]
+                $modeName = @{ Normal = '一般'; Repair = '修復'; Extract = '擷取資料' }[$a.Mode]
+                if ($a.Interactive) { $modeName += '（顯示視窗）' }
                 Send-UnLockEvent $Sync 'log' ("  以{0}模式開啟失敗：{1}" -f $modeName, (Get-FriendlyError $_)) -Level Warn
             }
         }
+        if ($interactive) {
+            # 已取得授權（或確定無法開啟），切回背景模式繼續處理
+            try { Set-OfficeInteractive -AppEntry $entry -On $false } catch { }
+            $interactive = $false
+            $Watchdog.Arm($entry.Pid, [int]$Options.TimeoutSeconds)
+        }
         if (-not $doc) {
             $why = if ($openError) { Get-FriendlyError $openError } else { '未知原因' }
+            if ($pre.IrmProtected) {
+                $src = Format-ProtectionSource $pre
+                $why += ('。受 IRM 保護的檔案{0}無法由程式開啟，可能原因：' -f $src) +
+                '(1) 尚未取得此檔案的授權——請先用 Excel 手動開啟一次此檔案（取得授權）並關閉，再用本工具處理；' +
+                '(2) 您對此檔案的權限不包含「以程式設計方式存取」，Office 會拒絕程式開啟——請手動開啟後到「檔案 → 資訊 → 檢視權限」確認；' +
+                '(3) 您的帳戶沒有開啟權限；(4) 公司的 DRM／資安軟體禁止程式自動開啟受保護的檔案。(2)(3)(4) 需請檔案擁有者或資訊部門協助'
+            }
             if ($isCheck) {
-                $r.Result = '需修復'
-                $r.Message = 'Office 無法正常開啟：' + $why
+                $r.Result = if ($pre.IrmProtected) { '無法開啟' } else { '需修復' }
+                $r.Message = 'Office 無法開啟：' + $why
                 return $r
             }
             throw ('Office 無法開啟此檔案：' + $why)
@@ -194,7 +284,12 @@ function Invoke-UnLockFile {
 
         # ---- 3. 讀取目前狀態 -------------------------------------------
         $labelBefore = Get-DocumentLabel $doc
-        if ($labelBefore) { $r.LabelBefore = Resolve-UnLockLabelName $labelBefore.Id $labelBefore.Name $Options.KnownLabels }
+        if ($labelBefore -and $labelBefore.Id) {
+            $name = if ($labelBefore.Name) { $labelBefore.Name } else { $pre.LabelName }
+            $r.LabelBefore = Resolve-UnLockLabelName $labelBefore.Id $name $Options.KnownLabels
+        }
+        elseif ($labelBefore -and -not $pre.LabelId) { $r.LabelBefore = '(無標籤)' }
+        $currentLabelId = if ($labelBefore -and $labelBefore.Id) { $labelBefore.Id } else { $pre.LabelId }
         $irmBefore = Get-DocumentIrm $doc
         if ($null -ne $irmBefore) { $r.IrmBefore = if ($irmBefore) { '受限制' } else { '無限制' } }
 
@@ -211,7 +306,7 @@ function Invoke-UnLockFile {
             if ($script:LegacyExtensions -contains $ext) {
                 $notes.Add("舊版格式 ($ext) 不支援敏感度標籤，已略過標籤設定")
             }
-            elseif ($labelBefore -and $labelBefore.Id -eq $target.Id) {
+            elseif ($currentLabelId -and $currentLabelId -eq $target.Id) {
                 $r.LabelAfter = $target.Name
                 Send-UnLockEvent $Sync 'log' ('  標籤已是「' + $target.Name + '」')
             }
@@ -277,9 +372,18 @@ function Invoke-UnLockFile {
                 Copy-Item -LiteralPath $path -Destination $bak -Force
                 Send-UnLockEvent $Sync 'log' ('  原檔已備份至 ' + $bak)
             }
-            Move-UnLockFileOver -Source $tmp -Destination $dest
+            if (Move-UnLockFileOver -Source $tmp -Destination $dest) {
+                $r.Output = $dest
+            }
+            else {
+                # 原檔被鎖住：不要丟掉處理結果，改存在原檔旁邊
+                $alt = Get-UnLockAlternatePath $dest
+                [void](Move-UnLockFileOver -Source $tmp -Destination $alt -Retries 1)
+                $r.Output = $alt
+                $notes.Add(('原檔正被其他程式使用（可能已在 Excel 中開啟），無法取代；處理後的檔案已另存為「{0}」' -f [IO.Path]::GetFileName($alt)))
+                $warn = $true
+            }
             $tmp = $null
-            $r.Output = $dest
         }
         else {
             Close-OfficeDocument -AppEntry $entry -Doc $doc
@@ -317,7 +421,20 @@ function Invoke-UnLockFile {
                 }
                 if ($Options.RemoveIrm -and $post.IrmProtected -and $r.IrmAfter -notlike '*標籤保護*') {
                     $r.IrmAfter = '仍受限制'
-                    $notes.Add('輸出檔仍受 IRM 保護')
+                    if ($post.LabelId -and $post.LabelEncrypts) {
+                        $pname = Resolve-UnLockLabelName $post.LabelId $post.LabelName $Options.KnownLabels
+                        $r.LabelAfter = $pname
+                        if (-not ($Options.SetLabel -and $target)) {
+                            $notes.Add(('輸出檔又被加密：存檔時 Office 依公司原則自動套用了會加密的標籤「{0}」（檔案沒有標籤時會套用預設標籤）。' +
+                                    '請在「② 處理選項」設定目標標籤（例如 Public\Public-Edit，可用「從範例檔讀取…」取得）後再處理一次') -f $pname)
+                        }
+                        else {
+                            $notes.Add(('輸出檔的標籤「{0}」會加密，請確認目標標籤是否為不加密的標籤（例如 Public\Public-Edit）' -f $pname))
+                        }
+                    }
+                    else {
+                        $notes.Add('輸出檔仍受 IRM 保護' + (Format-ProtectionSource $post))
+                    }
                     $warn = $true
                 }
             }
@@ -341,11 +458,60 @@ function Invoke-UnLockFile {
     }
     finally {
         $Watchdog.Disarm()
+        if ($interactive -and $entry) { try { Set-OfficeInteractive -AppEntry $entry -On $false } catch { } }
         if ($doc) { Close-OfficeDocument -AppEntry $entry -Doc $doc }
         if ($tmp -and (Test-Path -LiteralPath $tmp)) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
     }
     if ($r.RepairDetail -and $r.Result -ne '失敗') { $notes.Add('Office 修復紀錄：' + $r.RepairDetail) }
     $r.Message = ($notes -join '；')
+    return $r
+}
+
+function Invoke-UnLockFile {
+    <#
+        處理一個檔案。若移除限制存取後存檔，Office 依公司原則自動套用了「會加密的預設標籤」而使輸出檔又被加密，
+        自動對輸出檔再處理一次：此時檔案已有標籤，Office 不會再套用預設標籤，移除保護後即可維持「無限制存取」。
+    #>
+    param(
+        [Parameter(Mandatory)]$Item,
+        [Parameter(Mandatory)][hashtable]$Options,
+        [Parameter(Mandatory)][hashtable]$Session,
+        [Parameter(Mandatory)]$Watchdog,
+        [hashtable]$Sync
+    )
+    $r = Invoke-UnLockFileOnce -Item $Item -Options $Options -Session $Session -Watchdog $Watchdog -Sync $Sync
+    $eligible = ($Options.Mode -ne 'Check') -and $Options.RemoveIrm -and (-not $Options.IsRetry) -and
+        $r.Output -and $r.Result -eq '警告' -and $r.IrmAfter -eq '仍受限制'
+    if (-not $eligible) { return $r }
+
+    $post = Invoke-UnLockedInspection $r.Output
+    if (-not ($post.IrmProtected -and $post.LabelId -and $post.LabelEncrypts)) { return $r }
+    $lname = Resolve-UnLockLabelName $post.LabelId $post.LabelName $Options.KnownLabels
+    Send-UnLockEvent $Sync 'log' ('  存檔時 Office 自動套用了會加密的標籤「{0}」，自動再處理一次以移除保護…' -f $lname) -Level Warn
+
+    $retryOptions = @{}
+    foreach ($k in $Options.Keys) { $retryOptions[$k] = $Options[$k] }
+    $retryOptions.OutputMode = 'InPlace'      # 直接處理剛寫出的輸出檔
+    $retryOptions.Backup = $false
+    $retryOptions.Repair = $false
+    $retryOptions.SetLabel = $false           # 保留 Office 剛套用的標籤，只移除保護
+    $retryOptions.ForceResave = $false
+    $retryOptions.IsRetry = $true
+    $retryItem = [pscustomobject]@{ Path = $r.Output; BaseDir = [IO.Path]::GetDirectoryName($r.Output) }
+    $r2 = Invoke-UnLockFileOnce -Item $retryItem -Options $retryOptions -Session $Session -Watchdog $Watchdog -Sync $Sync
+
+    $post2 = Invoke-UnLockedInspection $r.Output
+    if ($post2.Status -ne 'PROTECTED' -and $post2.Status -ne 'CORRUPT' -and $r2.Result -ne '失敗') {
+        $r.Result = '成功'
+        $r.IrmAfter = '無限制'
+        $r.LabelAfter = $lname
+        $r.Message = ('第一次存檔時 Office 依公司原則自動套用了標籤「{0}」並重新加密；已自動再處理一次，保護已移除（標籤保留為「{0}」）' -f $lname)
+        Send-UnLockEvent $Sync 'log' '  第二次處理完成：已改為無限制存取' -Level OK
+    }
+    else {
+        $detail = if ($r2.Message) { $r2.Message } else { $r2.Result }
+        $r.Message = $r.Message + '；已自動再處理一次仍無法移除保護：' + $detail
+    }
     return $r
 }
 
@@ -388,6 +554,7 @@ function Invoke-UnLockBatch {
     $Sync.Done = $false
     if (-not $Options.TimeoutSeconds) { $Options.TimeoutSeconds = 180 }
     if (-not $Options.ContainsKey('AssignmentMethod')) { $Options.AssignmentMethod = 1 }
+    if (-not $Options.ContainsKey('IrmInteractive')) { $Options.IrmInteractive = $true }
 
     $session = @{}
     $watchdog = New-Object UnLocked.Watchdog
@@ -399,6 +566,9 @@ function Invoke-UnLockBatch {
         Send-UnLockEvent $Sync 'log' ("開始{0} {1} 個檔案" -f $modeText, $Items.Count)
         if ($Options.Mode -ne 'Check') {
             if ($Options.SetLabel -and $Options.Label) { Send-UnLockEvent $Sync 'log' ('目標標籤：' + $Options.Label.Name + ' (' + $Options.Label.Id + ')') }
+            if ($Options.RemoveIrm -and -not ($Options.SetLabel -and $Options.Label)) {
+                Send-UnLockEvent $Sync 'log' '注意：未設定目標標籤。若公司原則會為沒有標籤的檔案自動套用預設標籤（例如會加密的 Internal），存檔後檔案可能又被加密。' -Level Warn
+            }
             $outText = if ($Options.OutputMode -eq 'InPlace') { '覆寫原檔' } else { '另存至 ' + $Options.OutputFolder }
             Send-UnLockEvent $Sync 'log' ('輸出方式：' + $outText)
         }
@@ -413,7 +583,7 @@ function Invoke-UnLockBatch {
             $res = Invoke-UnLockFile -Item $item -Options $Options -Session $session -Watchdog $watchdog -Sync $Sync
             $results.Add($res)
             Send-UnLockEvent $Sync 'result' -Data $res
-            $lvl = switch ($res.Result) { '失敗' { 'Error' } '警告' { 'Warn' } '需修復' { 'Warn' } '略過' { 'Warn' } default { 'OK' } }
+            $lvl = switch ($res.Result) { '失敗' { 'Error' } '無法開啟' { 'Error' } '警告' { 'Warn' } '需修復' { 'Warn' } '略過' { 'Warn' } default { 'OK' } }
             $tail = if ($res.Message) { '：' + $res.Message } else { '' }
             Send-UnLockEvent $Sync 'log' ('  → ' + $res.Result + $tail) -Level $lvl
         }
