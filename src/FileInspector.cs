@@ -779,10 +779,11 @@ namespace UnLocked
         readonly Stream inner;
         readonly long limit;
         uint crc = 0xFFFFFFFF;
-        public long Count;
+        long count;
 
         public CrcStream(Stream inner, long limit) { this.inner = inner; this.limit = limit; }
         public uint Crc { get { return crc ^ 0xFFFFFFFF; } }
+        public long Count { get { return count; } }
 
         static uint[] BuildTable()
         {
@@ -798,11 +799,11 @@ namespace UnLocked
 
         public override int Read(byte[] buffer, int offset, int count)
         {
-            if (Count >= limit) return 0;
-            if (count > limit - Count) count = (int)(limit - Count);
+            if (this.count >= limit) return 0;
+            if (count > limit - this.count) count = (int)(limit - this.count);
             int n = inner.Read(buffer, offset, count);
             for (int i = 0; i < n; i++) crc = Table[(crc ^ buffer[offset + i]) & 0xFF] ^ (crc >> 8);
-            Count += n;
+            this.count += n;
             return n;
         }
 
@@ -810,7 +811,7 @@ namespace UnLocked
         public override bool CanSeek { get { return false; } }
         public override bool CanWrite { get { return false; } }
         public override long Length { get { throw new NotSupportedException(); } }
-        public override long Position { get { return Count; } set { throw new NotSupportedException(); } }
+        public override long Position { get { return count; } set { throw new NotSupportedException(); } }
         public override void Flush() { }
         public override long Seek(long offset, SeekOrigin origin) { throw new NotSupportedException(); }
         public override void SetLength(long value) { throw new NotSupportedException(); }
