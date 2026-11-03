@@ -42,12 +42,9 @@ $script:StatusText = @{
 function Initialize-UnLocked {
     if (-not ('UnLocked.FileInspector' -as [type])) {
         $code = [IO.File]::ReadAllText((Join-Path $script:SrcDir 'FileInspector.cs'), [Text.Encoding]::UTF8)
-        try {
-            Add-Type -TypeDefinition $code -Language CSharp -ReferencedAssemblies 'System.Xml' -ErrorAction Stop
-        }
-        catch {
-            Add-Type -TypeDefinition $code -Language CSharp -ErrorAction Stop
-        }
+        # 以實際路徑參照 System.Xml，避免 Windows PowerShell 5.1 以部分名稱解析失敗
+        $xmlAsm = [System.Xml.XmlDocument].Assembly.Location
+        Add-Type -TypeDefinition $code -Language CSharp -ReferencedAssemblies $xmlAsm -ErrorAction Stop
     }
     if (-not ('UnLocked.Watchdog' -as [type])) {
         $code = [IO.File]::ReadAllText((Join-Path $script:SrcDir 'OfficeInterop.cs'), [Text.Encoding]::UTF8)
