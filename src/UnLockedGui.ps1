@@ -313,8 +313,6 @@ function Update-OutputControls {
     $folder = $script:ui.OptFolder.Checked
     $script:ui.OutputBox.Enabled = $folder
     $script:ui.BrowseBtn.Enabled = $folder
-    $script:ui.OpenOutBtn.Enabled = $folder
-    $script:ui.OutputHint.Enabled = $folder
     $script:ui.OptBackup.Enabled = -not $folder
 }
 
@@ -520,14 +518,13 @@ function New-UnLockedForm {
     $form.MinimumSize = New-Object System.Drawing.Size([Math]::Min((ScalePx 900), $wa.Width), [Math]::Min((ScalePx 640), $wa.Height))
     $script:ui.Form = $form
 
-    $root = New-Ctl TableLayoutPanel @{ Dock = 'Fill'; ColumnCount = 1; RowCount = 6; Padding = (& $pad 8 8 8 8) }
+    $root = New-Ctl TableLayoutPanel @{ Dock = 'Fill'; ColumnCount = 1; RowCount = 5; Padding = (& $pad 8 6 8 6) }
     [void]$root.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
-    [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 68)))   # ① 檔案
+    [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 75)))   # ① 檔案
     [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))     # ② 選項
     [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))     # ③ 匯出路徑
-    [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))     # ④ 執行按鈕
-    [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))     # 進度
-    [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 32)))   # 紀錄
+    [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))     # ④ 執行／進度
+    [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 25)))   # 紀錄
     $form.Controls.Add($root)
 
     # ---- ① 檔案 ---------------------------------------------------------
@@ -583,8 +580,10 @@ function New-UnLockedForm {
     foreach ($c in @((New-Ctl Label @{ Text = '　　調降標籤的理由：'; AutoSize = $true; Margin = (& $pad 3 8 3 3) }), $script:ui.Justification,
             (New-Ctl Label @{ Text = '（公司政策要求調降理由時使用）'; AutoSize = $true; ForeColor = [System.Drawing.Color]::DimGray; Margin = (& $pad 3 8 3 3) }))) { [void]$rowB.Controls.Add($c) }
 
+    $rowC = New-Flow
     $script:ui.OptIrm = New-Ctl CheckBox @{ Text = '移除限制存取（IRM）：設為「無限制存取」'; AutoSize = $true; Margin = (& $pad 3 6 3 3) }
-    $script:ui.OptRepair = New-Ctl CheckBox @{ Text = '偵測檔案是否毀損，並自動修復（以 Office「開啟並修復」後重新儲存）'; AutoSize = $true; Margin = (& $pad 3 6 3 3) }
+    $script:ui.OptRepair = New-Ctl CheckBox @{ Text = '偵測檔案是否毀損，並自動修復（Office「開啟並修復」後重新儲存）'; AutoSize = $true; Margin = (& $pad 24 6 3 3) }
+    foreach ($c in @($script:ui.OptIrm, $script:ui.OptRepair)) { [void]$rowC.Controls.Add($c) }
 
     $rowF = New-Flow
     $script:ui.Timeout = New-Ctl NumericUpDown @{ Minimum = 30; Maximum = 3600; Increment = 30; Value = 180; Width = (ScalePx 70); Margin = (& $pad 3 5 3 3) }
@@ -592,25 +591,23 @@ function New-UnLockedForm {
     foreach ($c in @((New-Ctl Label @{ Text = '單檔逾時：'; AutoSize = $true; Margin = (& $pad 3 8 3 3) }), $script:ui.Timeout,
             (New-Ctl Label @{ Text = '秒'; AutoSize = $true; Margin = (& $pad 0 8 3 3) }), $script:ui.OptDeep)) { [void]$rowF.Controls.Add($c) }
 
-    foreach ($c in @($rowA, $rowB, $script:ui.OptIrm, $script:ui.OptRepair, $rowF)) { [void]$t2.Controls.Add($c) }
+    foreach ($c in @($rowA, $rowB, $rowC, $rowF)) { [void]$t2.Controls.Add($c) }
     $g2.Controls.Add($t2)
     [void]$root.Controls.Add($g2, 0, 1)
 
     # ---- ③ 匯出路徑 -----------------------------------------------------
-    $g3 = New-Ctl GroupBox @{ Text = '③ 匯出路徑'; Dock = 'Fill'; AutoSize = $true; AutoSizeMode = 'GrowAndShrink'; Padding = (& $pad 6 4 6 6) }
+    $g3 = New-Ctl GroupBox @{ Text = '③ 匯出路徑（處理完成的檔案以相同檔名存到這裡，原始檔案不會被修改；以資料夾加入的檔案會保留子資料夾結構）'; Dock = 'Fill'; AutoSize = $true; AutoSizeMode = 'GrowAndShrink'; Padding = (& $pad 6 4 6 6) }
     $script:ui.ExportGroup = $g3
     $t3 = New-Ctl TableLayoutPanel @{ Dock = 'Fill'; ColumnCount = 1; AutoSize = $true; AutoSizeMode = 'GrowAndShrink' }
     [void]$t3.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
 
     $rowE1 = New-Flow
     $script:ui.OptFolder = New-Ctl RadioButton @{ Text = '匯出到資料夾：'; AutoSize = $true; Margin = (& $pad 3 8 3 3) }
-    $script:ui.OutputBox = New-Ctl TextBox @{ Width = (ScalePx 520); Margin = (& $pad 3 5 3 3) }
+    $script:ui.OutputBox = New-Ctl TextBox @{ Width = (ScalePx 430); Margin = (& $pad 3 5 3 3) }
     $script:ui.BrowseBtn = New-Btn '選擇匯出路徑…' { Invoke-BrowseOutput }
-    $script:ui.OpenOutBtn = New-Btn '開啟' { Invoke-OpenOutput }
-    foreach ($c in @($script:ui.OptFolder, $script:ui.OutputBox, $script:ui.BrowseBtn, $script:ui.OpenOutBtn)) { [void]$rowE1.Controls.Add($c) }
-
-    $script:ui.OutputHint = New-Ctl Label @{ AutoSize = $true; ForeColor = [System.Drawing.Color]::DimGray; Margin = (& $pad 24 0 3 4)
-        Text = '處理完成的檔案會以相同檔名存到這個資料夾，原始檔案不會被修改；以資料夾加入的檔案會保留原本的子資料夾結構。' }
+    $script:ui.OpenOutBtn = New-Btn '開啟資料夾' { Invoke-OpenOutput }
+    $script:ui.ExportBtn = New-Btn '匯出報表…' { Invoke-ExportReport }
+    foreach ($c in @($script:ui.OptFolder, $script:ui.OutputBox, $script:ui.BrowseBtn, $script:ui.OpenOutBtn, $script:ui.ExportBtn)) { [void]$rowE1.Controls.Add($c) }
 
     $rowE2 = New-Flow
     $script:ui.OptInPlace = New-Ctl RadioButton @{ Text = '不匯出，直接覆寫原始檔案'; AutoSize = $true; Margin = (& $pad 3 6 3 3) }
@@ -621,7 +618,7 @@ function New-UnLockedForm {
     $script:ui.OptFolder.Add_CheckedChanged({ if ($script:ui.OptFolder.Checked) { $script:ui.OptInPlace.Checked = $false }; Update-OutputControls })
     $script:ui.OptInPlace.Add_CheckedChanged({ if ($script:ui.OptInPlace.Checked) { $script:ui.OptFolder.Checked = $false }; Update-OutputControls })
 
-    foreach ($c in @($rowE1, $script:ui.OutputHint, $rowE2)) { [void]$t3.Controls.Add($c) }
+    foreach ($c in @($rowE1, $rowE2)) { [void]$t3.Controls.Add($c) }
     $g3.Controls.Add($t3)
     [void]$root.Controls.Add($g3, 0, 2)
 
@@ -632,21 +629,15 @@ function New-UnLockedForm {
     $script:ui.StartBtn.Font = New-Object System.Drawing.Font($form.Font, [System.Drawing.FontStyle]::Bold)
     $script:ui.StopBtn = New-Btn '停止' { Stop-UnLockedRun } 90
     $script:ui.StopBtn.Enabled = $false
-    $script:ui.Progress = New-Ctl ProgressBar @{ Width = (ScalePx 320); Height = (ScalePx 20); Margin = (& $pad 3 3 3 3) }
-    $script:ui.Status = New-Ctl Label @{ Text = '就緒'; AutoSize = $true; Margin = (& $pad 6 5 3 3) }
-    $script:ui.ExportBtn = New-Btn '匯出報表…' { Invoke-ExportReport }
+    $script:ui.Progress = New-Ctl ProgressBar @{ Width = (ScalePx 240); Height = (ScalePx 20); Margin = (& $pad 12 8 3 3) }
+    $script:ui.Status = New-Ctl Label @{ Text = '就緒'; AutoSize = $true; Margin = (& $pad 6 10 3 3) }
     foreach ($c in @((New-Ctl Label @{ Text = '④ 執行：'; AutoSize = $true; Margin = (& $pad 3 10 0 3) }),
-            $script:ui.CheckBtn, $script:ui.StartBtn, $script:ui.StopBtn,
-            (New-Btn '開啟匯出資料夾' { Invoke-OpenOutput }), $script:ui.ExportBtn)) { [void]$rowG.Controls.Add($c) }
+            $script:ui.CheckBtn, $script:ui.StartBtn, $script:ui.StopBtn, $script:ui.Progress, $script:ui.Status)) { [void]$rowG.Controls.Add($c) }
     [void]$root.Controls.Add($rowG, 0, 3)
-
-    $rowH = New-Flow
-    foreach ($c in @((New-Ctl Label @{ Text = '進度：'; AutoSize = $true; Margin = (& $pad 3 5 0 3) }), $script:ui.Progress, $script:ui.Status)) { [void]$rowH.Controls.Add($c) }
-    [void]$root.Controls.Add($rowH, 0, 4)
 
     # ---- 紀錄 -----------------------------------------------------------
     $script:ui.LogBox = New-Ctl TextBox @{ Dock = 'Fill'; Multiline = $true; ReadOnly = $true; ScrollBars = 'Vertical'; WordWrap = $true; BackColor = [System.Drawing.SystemColors]::Window }
-    [void]$root.Controls.Add($script:ui.LogBox, 0, 5)
+    [void]$root.Controls.Add($script:ui.LogBox, 0, 4)
 
     $script:ui.Timer = New-Object System.Windows.Forms.Timer
     $script:ui.Timer.Interval = 250
