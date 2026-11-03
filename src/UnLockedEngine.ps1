@@ -143,35 +143,62 @@ function Invoke-UnLockFile {
     $entry = $null
     $doc = $null
     $tmp = $null
+    $interactive = $false
     try {
         $entry = Get-OfficeApp -Session $Session -Kind $kind
         $Watchdog.Arm($entry.Pid, [int]$Options.TimeoutSeconds)
         $snapshot = Get-RepairLogSnapshot
 
-        $ladder = @('Normal')
+        # 開啟順序：一般 →（受 IRM 保護時）顯示 Office 視窗重試 → 修復 → 僅擷取資料（Excel）
+        # 受 IRM 保護的檔案不傳假密碼，否則 Office 會改用密碼解密而開啟失敗
+        $protectedLike = $pre.IrmProtected -or $pre.Status -eq 'UNKNOWN'
+        $usePw = -not $pre.IrmProtected
+        $canInteract = $protectedLike -and $Options.IrmInteractive
+        $attempts = New-Object 'System.Collections.Generic.List[object]'
+        $repairFirst = (-not $isCheck) -and $Options.Repair -and $pre.IsCorrupt
+        if (-not $repairFirst) { $attempts.Add(@{ Mode = 'Normal'; Interactive = $false }) }
+        if ($canInteract) { $attempts.Add(@{ Mode = 'Normal'; Interactive = $true }) }
         if (-not $isCheck -and $Options.Repair) {
-            $ladder = if ($pre.IsCorrupt) { @('Repair') } else { @('Normal', 'Repair') }
-            if ($kind -eq 'Excel') { $ladder += 'Extract' }
+            $attempts.Add(@{ Mode = 'Repair'; Interactive = $canInteract })
+            if ($kind -eq 'Excel') { $attempts.Add(@{ Mode = 'Extract'; Interactive = $canInteract }) }
         }
+
         $usedMode = $null
         $openError = $null
-        foreach ($mode in $ladder) {
+        foreach ($a in $attempts) {
+            if ($a.Interactive -and -not $interactive) {
+                Set-OfficeInteractive -AppEntry $entry -On $true
+                $interactive = $true
+                $Watchdog.Arm($entry.Pid, [Math]::Max([int]$Options.TimeoutSeconds, 600))
+                Send-UnLockEvent $Sync 'log' ('  背景開啟失敗，已顯示 {0} 視窗重試：若出現登入、選擇帳戶或權限視窗，請在 Office 視窗中完成操作' -f $kind) -Level Warn
+            }
             try {
-                $doc = Open-OfficeDocument -AppEntry $entry -Path $path -RepairMode $mode -ReadOnly $isCheck
-                if ($doc) { $usedMode = $mode; break }
+                $doc = Open-OfficeDocument -AppEntry $entry -Path $path -RepairMode $a.Mode -ReadOnly $isCheck -UsePassword $usePw -Interactive $a.Interactive
+                if ($doc) { $usedMode = $a.Mode; break }
             }
             catch {
                 if ($Watchdog.Fired -or (Test-OfficeDisconnected $_)) { throw }
                 $openError = $_
-                $modeName = @{ Normal = '一般'; Repair = '修復'; Extract = '擷取資料' }[$mode]
+                $modeName = @{ Normal = '一般'; Repair = '修復'; Extract = '擷取資料' }[$a.Mode]
+                if ($a.Interactive) { $modeName += '（顯示視窗）' }
                 Send-UnLockEvent $Sync 'log' ("  以{0}模式開啟失敗：{1}" -f $modeName, (Get-FriendlyError $_)) -Level Warn
             }
         }
+        if ($interactive) {
+            # 已取得授權（或確定無法開啟），切回背景模式繼續處理
+            try { Set-OfficeInteractive -AppEntry $entry -On $false } catch { }
+            $interactive = $false
+            $Watchdog.Arm($entry.Pid, [int]$Options.TimeoutSeconds)
+        }
         if (-not $doc) {
             $why = if ($openError) { Get-FriendlyError $openError } else { '未知原因' }
+            if ($pre.IrmProtected) {
+                $why += '。受 IRM 保護的檔案無法由程式開啟，可能原因：(1) 需要登入或選擇權限帳戶——請先用 Excel／Word／PowerPoint 手動開啟一次此檔案；' +
+                '(2) 您的帳戶對此檔案沒有開啟權限；(3) 公司的 DRM／資安軟體禁止程式自動開啟受保護的檔案（請洽資訊部門）'
+            }
             if ($isCheck) {
-                $r.Result = '需修復'
-                $r.Message = 'Office 無法正常開啟：' + $why
+                $r.Result = if ($pre.IrmProtected) { '無法開啟' } else { '需修復' }
+                $r.Message = 'Office 無法開啟：' + $why
                 return $r
             }
             throw ('Office 無法開啟此檔案：' + $why)
@@ -341,6 +368,7 @@ function Invoke-UnLockFile {
     }
     finally {
         $Watchdog.Disarm()
+        if ($interactive -and $entry) { try { Set-OfficeInteractive -AppEntry $entry -On $false } catch { } }
         if ($doc) { Close-OfficeDocument -AppEntry $entry -Doc $doc }
         if ($tmp -and (Test-Path -LiteralPath $tmp)) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
     }
@@ -388,6 +416,7 @@ function Invoke-UnLockBatch {
     $Sync.Done = $false
     if (-not $Options.TimeoutSeconds) { $Options.TimeoutSeconds = 180 }
     if (-not $Options.ContainsKey('AssignmentMethod')) { $Options.AssignmentMethod = 1 }
+    if (-not $Options.ContainsKey('IrmInteractive')) { $Options.IrmInteractive = $true }
 
     $session = @{}
     $watchdog = New-Object UnLocked.Watchdog
@@ -413,7 +442,7 @@ function Invoke-UnLockBatch {
             $res = Invoke-UnLockFile -Item $item -Options $Options -Session $session -Watchdog $watchdog -Sync $Sync
             $results.Add($res)
             Send-UnLockEvent $Sync 'result' -Data $res
-            $lvl = switch ($res.Result) { '失敗' { 'Error' } '警告' { 'Warn' } '需修復' { 'Warn' } '略過' { 'Warn' } default { 'OK' } }
+            $lvl = switch ($res.Result) { '失敗' { 'Error' } '無法開啟' { 'Error' } '警告' { 'Warn' } '需修復' { 'Warn' } '略過' { 'Warn' } default { 'OK' } }
             $tail = if ($res.Message) { '：' + $res.Message } else { '' }
             Send-UnLockEvent $Sync 'log' ('  → ' + $res.Result + $tail) -Level $lvl
         }

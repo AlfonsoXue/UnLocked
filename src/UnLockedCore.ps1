@@ -90,6 +90,7 @@ function Get-UnLockedDefaultConfig {
         SetLabel         = $true
         RemoveIrm        = $true
         Repair           = $true
+        IrmInteractive   = $true      # IRM 檔案背景開啟失敗時，顯示 Office 視窗重試
         OutputMode       = 'Folder'   # Folder = 另存到輸出資料夾；InPlace = 覆寫原檔
         OutputFolder     = ''
         Backup           = $true
@@ -327,9 +328,11 @@ function Get-FriendlyError {
             $ex -is [System.Reflection.TargetInvocationException])) {
         $ex = $ex.InnerException
     }
-    $msg = $ex.Message -replace '\s+', ' '
+    $msg = ($ex.Message -replace '\s+', ' ').Trim()
+    $hr = Get-ComHResult $ErrorRecord
+    if ($hr) { $msg += ' [0x{0:X8}]' -f $hr }
     if (Test-OfficeDisconnected $ErrorRecord) { $msg = 'Office 程式已中斷或被關閉（' + $msg + '）' }
-    $msg.Trim()
+    $msg
 }
 
 function New-OfficeApp {
@@ -426,9 +429,12 @@ function Open-OfficeDocument {
     <#
         RepairMode：Normal = 一般開啟；Repair = 開啟並修復；Extract = 只擷取資料（僅 Excel）
     #>
-    param($AppEntry, [string]$Path, [ValidateSet('Normal', 'Repair', 'Extract')][string]$RepairMode = 'Normal', [bool]$ReadOnly = $false)
+    param($AppEntry, [string]$Path, [ValidateSet('Normal', 'Repair', 'Extract')][string]$RepairMode = 'Normal', [bool]$ReadOnly = $false,
+        [bool]$UsePassword = $true, [bool]$Interactive = $false)
     $m = [Type]::Missing
-    $pw = $script:DummyPassword   # 假密碼：避免有密碼的檔案跳出輸入視窗而卡住
+    # 假密碼：避免有密碼的檔案跳出看不見的輸入視窗而卡住。
+    # 受 IRM 保護的檔案不可傳入密碼（Office 會改用密碼解密而開啟失敗），由呼叫端以 -UsePassword $false 關閉。
+    $pw = if ($UsePassword) { $script:DummyPassword } else { $m }
     $app = $AppEntry.App
     switch ($AppEntry.Kind) {
         'Excel' {
@@ -442,14 +448,41 @@ function Open-OfficeDocument {
             $repair = ($RepairMode -eq 'Repair')
             # Open(FileName, ConfirmConversions, ReadOnly, AddToRecentFiles, PasswordDocument, PasswordTemplate, Revert,
             #      WritePasswordDocument, WritePasswordTemplate, Format, Encoding, Visible, OpenAndRepair, DocumentDirection, NoEncodingDialog)
-            return $app.Documents.Open($Path, $false, $ReadOnly, $false, $pw, $pw, $false, $pw, $pw, $m, $m, $false, $repair, $m, $true)
+            return $app.Documents.Open($Path, $false, $ReadOnly, $false, $pw, $pw, $false, $pw, $pw, $m, $m, $Interactive, $repair, $m, $true)
         }
         'PowerPoint' {
             if ($RepairMode -eq 'Extract') { throw 'PowerPoint 不支援僅擷取資料模式' }
             $repair = if ($RepairMode -eq 'Repair') { -1 } else { 0 }       # MsoTriState
             $ro = if ($ReadOnly) { -1 } else { 0 }
+            $win = if ($Interactive) { -1 } else { 0 }
             # Open2007(FileName, ReadOnly, Untitled, WithWindow, OpenAndRepair)
-            return $app.Presentations.Open2007($Path, $ro, 0, 0, $repair)
+            return $app.Presentations.Open2007($Path, $ro, 0, $win, $repair)
+        }
+    }
+}
+
+function Set-OfficeInteractive {
+    <#
+        切換 Office 為「互動模式」（顯示視窗與提示）或「背景模式」。
+        受 IRM 保護的檔案第一次開啟時，Office 可能需要登入或選擇權限帳戶，背景模式無法顯示這些視窗。
+    #>
+    param($AppEntry, [bool]$On)
+    $app = $AppEntry.App
+    switch ($AppEntry.Kind) {
+        'Excel' {
+            $app.ScreenUpdating = $On
+            $app.Visible = $On
+            $app.DisplayAlerts = $On
+            if ($On) { try { [UnLocked.NativeMethods]::BringToFront([long]$app.Hwnd) } catch { } }
+        }
+        'Word' {
+            $app.Visible = $On
+            $app.DisplayAlerts = if ($On) { -1 } else { 0 }     # wdAlertsAll / wdAlertsNone
+            if ($On) { try { $app.Activate() } catch { } }
+        }
+        'PowerPoint' {
+            $app.DisplayAlerts = if ($On) { 2 } else { 1 }      # ppAlertsAll / ppAlertsNone
+            if ($On) { try { $app.Activate() } catch { } }
         }
     }
 }

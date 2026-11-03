@@ -92,6 +92,13 @@ Assert-That ((Resolve-UnLockLabelName '6f1c2c49-6b5a-4d1e-9a51-7a3c1e0d4b21' 'Pu
 $dest = Get-UnLockDestination -Item ([pscustomobject]@{ Path = 'C:\data\sub\a.xlsx'; BaseDir = 'C:\data' }) -Options @{ OutputMode = 'Folder'; OutputFolder = 'E:\out' }
 Assert-That ($dest -eq 'E:\out\sub\a.xlsx') "輸出路徑（實際 ${dest}）"
 
+$comEx = New-Object System.Runtime.InteropServices.COMException('無法取得類別 Workbooks 的 Open 屬性', -2146827284)
+$friendly = Get-FriendlyError (New-Object System.Management.Automation.ErrorRecord($comEx, 'Open', 'NotSpecified', $null))
+Assert-That ($friendly.Contains('[0x800A03EC]') -and $friendly.Contains('Workbooks')) 'Get-FriendlyError 附上錯誤碼' $friendly
+$openParams = (Get-Command Open-OfficeDocument).Parameters
+Assert-That ($openParams.ContainsKey('UsePassword') -and $openParams.ContainsKey('Interactive')) 'Open-OfficeDocument 支援 UsePassword／Interactive'
+Assert-That ([bool](Get-UnLockedDefaultConfig).IrmInteractive) '預設開啟 IRM 互動重試'
+
 Write-Host '== 範例檔標籤讀取（不需 Office） ==' -ForegroundColor Cyan
 $l = Read-LabelFromSampleFile -Path (Join-Path $fixtures 'labeled.xlsx')
 Assert-That ($l.Id -eq '6f1c2c49-6b5a-4d1e-9a51-7a3c1e0d4b21' -and $l.SiteId -eq '0e6c3c7a-1b2d-4c5e-8f90-a1b2c3d4e5f6' -and $l.Name -eq 'Public-Edit') 'Read-LabelFromSampleFile'

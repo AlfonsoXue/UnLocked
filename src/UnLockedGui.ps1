@@ -254,6 +254,7 @@ function Update-UiRow {
         '需修復' { [System.Drawing.Color]::DarkOrange }
         '待確認' { [System.Drawing.Color]::DarkOrange }
         '失敗' { [System.Drawing.Color]::Firebrick }
+        '無法開啟' { [System.Drawing.Color]::Firebrick }
         default { [System.Drawing.Color]::DimGray }
     }
     $lvi.ForeColor = $color
@@ -281,6 +282,7 @@ function Save-CurrentConfig {
         $c.Justification = $script:ui.Justification.Text
         $c.RemoveIrm = $script:ui.OptIrm.Checked
         $c.Repair = $script:ui.OptRepair.Checked
+        $c.IrmInteractive = $script:ui.OptInteractive.Checked
         $c.OutputMode = if ($script:ui.OptInPlace.Checked) { 'InPlace' } else { 'Folder' }
         $c.OutputFolder = $script:ui.OutputBox.Text.Trim()
         $c.Backup = $script:ui.OptBackup.Checked
@@ -297,6 +299,7 @@ function Set-UiFromConfig {
     $script:ui.Justification.Text = [string]$c.Justification
     $script:ui.OptIrm.Checked = [bool]$c.RemoveIrm
     $script:ui.OptRepair.Checked = [bool]$c.Repair
+    $script:ui.OptInteractive.Checked = [bool]$c.IrmInteractive
     $script:ui.OptInPlace.Checked = ($c.OutputMode -eq 'InPlace')
     $script:ui.OptFolder.Checked = ($c.OutputMode -ne 'InPlace')
     $script:ui.OutputBox.Text = [string]$c.OutputFolder
@@ -405,6 +408,7 @@ function Start-UnLockedRun {
         AssignmentMethod = [int]$script:Cfg.AssignmentMethod
         RemoveIrm        = $script:ui.OptIrm.Checked
         Repair           = $script:ui.OptRepair.Checked
+        IrmInteractive   = $script:ui.OptInteractive.Checked
         DeepCheck        = $script:ui.OptDeep.Checked
         OutputMode       = if ($script:ui.OptInPlace.Checked) { 'InPlace' } else { 'Folder' }
         OutputFolder     = $script:ui.OutputBox.Text.Trim()
@@ -581,9 +585,16 @@ function New-UnLockedForm {
             (New-Ctl Label @{ Text = '（公司政策要求調降理由時使用）'; AutoSize = $true; ForeColor = [System.Drawing.Color]::DimGray; Margin = (& $pad 3 8 3 3) }))) { [void]$rowB.Controls.Add($c) }
 
     $rowC = New-Flow
-    $script:ui.OptIrm = New-Ctl CheckBox @{ Text = '移除限制存取（IRM）：設為「無限制存取」'; AutoSize = $true; Margin = (& $pad 3 6 3 3) }
-    $script:ui.OptRepair = New-Ctl CheckBox @{ Text = '偵測檔案是否毀損，並自動修復（Office「開啟並修復」後重新儲存）'; AutoSize = $true; Margin = (& $pad 24 6 3 3) }
-    foreach ($c in @($script:ui.OptIrm, $script:ui.OptRepair)) { [void]$rowC.Controls.Add($c) }
+    $script:ui.OptIrm = New-Ctl CheckBox @{ Text = '移除限制存取（IRM）→ 無限制存取'; AutoSize = $true; Margin = (& $pad 3 6 3 3) }
+    $script:ui.OptRepair = New-Ctl CheckBox @{ Text = '偵測毀損並自動修復'; AutoSize = $true; Margin = (& $pad 20 6 3 3) }
+    $script:ui.OptInteractive = New-Ctl CheckBox @{ Text = 'IRM 檔案無法在背景開啟時，顯示 Office 視窗重試'; AutoSize = $true; Margin = (& $pad 20 6 3 3) }
+    foreach ($c in @($script:ui.OptIrm, $script:ui.OptRepair, $script:ui.OptInteractive)) { [void]$rowC.Controls.Add($c) }
+    $tips = New-Object System.Windows.Forms.ToolTip
+    $tips.AutoPopDelay = 20000
+    $tips.SetToolTip($script:ui.OptIrm, '等同 Office「保護 → 限制存取 → 無限制存取」。需要您是檔案擁有者或具完整控制權限。')
+    $tips.SetToolTip($script:ui.OptRepair, '先檢查檔案結構；有毀損時以 Office「開啟並修復」開啟並重新儲存（Excel 最後會嘗試只擷取資料）。')
+    $tips.SetToolTip($script:ui.OptInteractive, "受 IRM 保護的檔案第一次開啟時，Office 可能需要登入或選擇權限帳戶。`n勾選後，背景開啟失敗時會顯示 Office 視窗讓您完成操作，之後自動切回背景繼續處理。")
+    $script:ui.ToolTip = $tips
 
     $rowF = New-Flow
     $script:ui.Timeout = New-Ctl NumericUpDown @{ Minimum = 30; Maximum = 3600; Increment = 30; Value = 180; Width = (ScalePx 70); Margin = (& $pad 3 5 3 3) }
