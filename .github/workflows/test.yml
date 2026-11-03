@@ -73,10 +73,11 @@ jobs:
             config.sample.json
           if-no-files-found: error
 
-  # 只在手動執行（Actions → test → Run workflow）時：重新產生 README 用的介面截圖並提交到該分支
+  # 手動執行（Actions → test → Run workflow），或 commit 訊息含 [screenshot] 時：
+  # 重新產生 README 用的介面截圖並提交到該分支
   update-screenshot:
     name: Update docs/screenshot.png
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && contains(github.event.head_commit.message, '[screenshot]'))
     runs-on: windows-latest
     permissions:
       contents: write

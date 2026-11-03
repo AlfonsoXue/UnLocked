@@ -24,7 +24,8 @@ $form = New-UnLockedForm
 Update-LabelCombo
 Set-UiFromConfig
 Update-CountLabel
-Add-UiLog 'UnLocked 已就緒（介面預覽）'
+$fixedTime = Get-Date '2026-01-15 09:30:00'
+Add-UiLog 'UnLocked 已就緒（介面預覽）' 'Info' $fixedTime
 Add-PathsToList -Paths @($fixtures)
 
 $items = @(foreach ($lvi in $script:ui.List.Items) { $lvi.Tag })
@@ -32,7 +33,7 @@ $sync = New-UnLockSync
 $results = @(Invoke-UnLockBatch -Items $items -Options @{ Mode = 'Check' } -Sync $sync)
 foreach ($r in $results) { Update-UiRow $r; $script:LastResults.Add($r) }
 $evt = $null
-while ($sync.Queue.TryDequeue([ref]$evt)) { if ($evt.Type -eq 'log') { Add-UiLog $evt.Message $evt.Level $evt.Time } }
+while ($sync.Queue.TryDequeue([ref]$evt)) { if ($evt.Type -eq 'log') { Add-UiLog $evt.Message $evt.Level $fixedTime } }
 $script:ui.Progress.Maximum = [Math]::Max(1, $items.Count)
 $script:ui.Progress.Value = $script:ui.Progress.Maximum
 $script:ui.Status.Text = '完成：' + ((@($results | Group-Object Result | ForEach-Object { '{0} {1}' -f $_.Name, $_.Count })) -join '、')
