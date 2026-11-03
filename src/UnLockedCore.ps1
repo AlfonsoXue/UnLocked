@@ -12,21 +12,31 @@ $script:UnLockedRoot = if ($env:UNLOCKED_HOME -and (Test-Path -LiteralPath $env:
 $script:DummyPassword = 'UnLocked#NoPassword#9f2c'
 $script:GuidPattern = '^\{?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\}?$'
 
+# 支援的副檔名 → 處理用的 Office 程式
 $script:ExtensionKinds = @{
-    '.xlsx' = 'Excel'; '.xlsm' = 'Excel'; '.xlsb' = 'Excel'; '.xls' = 'Excel'; '.xltx' = 'Excel'; '.xltm' = 'Excel'
-    '.docx' = 'Word'; '.docm' = 'Word'; '.doc' = 'Word'; '.dotx' = 'Word'; '.dotm' = 'Word'
-    '.pptx' = 'PowerPoint'; '.pptm' = 'PowerPoint'; '.ppt' = 'PowerPoint'; '.ppsx' = 'PowerPoint'; '.potx' = 'PowerPoint'
+    # Excel 活頁簿／範本
+    '.xlsx' = 'Excel'; '.xlsm' = 'Excel'; '.xlsb' = 'Excel'; '.xls' = 'Excel'
+    '.xltx' = 'Excel'; '.xltm' = 'Excel'; '.xlt' = 'Excel'
+    # Word 文件／範本
+    '.docx' = 'Word'; '.docm' = 'Word'; '.doc' = 'Word'
+    '.dotx' = 'Word'; '.dotm' = 'Word'; '.dot' = 'Word'
+    # PowerPoint 簡報／放映檔／範本
+    '.pptx' = 'PowerPoint'; '.pptm' = 'PowerPoint'; '.ppt' = 'PowerPoint'
+    '.ppsx' = 'PowerPoint'; '.ppsm' = 'PowerPoint'; '.pps' = 'PowerPoint'
+    '.potx' = 'PowerPoint'; '.potm' = 'PowerPoint'; '.pot' = 'PowerPoint'
 }
+
+$script:KindDisplayNames = @{ Excel = 'Excel'; Word = 'Word'; PowerPoint = 'PowerPoint' }
 
 # 另存格式：XlFileFormat / WdSaveFormat / PpSaveAsFileType
 $script:SaveFormats = @{
-    '.xlsx' = 51; '.xlsm' = 52; '.xlsb' = 50; '.xls' = 56; '.xltx' = 54; '.xltm' = 53
-    '.docx' = 12; '.docm' = 13; '.doc' = 0; '.dotx' = 14; '.dotm' = 15
-    '.pptx' = 24; '.pptm' = 25; '.ppt' = 1; '.ppsx' = 28; '.potx' = 26
+    '.xlsx' = 51; '.xlsm' = 52; '.xlsb' = 50; '.xls' = 56; '.xltx' = 54; '.xltm' = 53; '.xlt' = 17
+    '.docx' = 12; '.docm' = 13; '.doc' = 0; '.dotx' = 14; '.dotm' = 15; '.dot' = 1
+    '.pptx' = 24; '.pptm' = 25; '.ppt' = 1; '.ppsx' = 28; '.ppsm' = 29; '.pps' = 7; '.potx' = 26; '.potm' = 27; '.pot' = 5
 }
 
 # 只有 Open XML 格式支援敏感度標籤
-$script:LegacyExtensions = @('.xls', '.doc', '.ppt')
+$script:LegacyExtensions = @('.xls', '.xlt', '.doc', '.dot', '.ppt', '.pps', '.pot')
 
 $script:StatusText = @{
     OK        = '正常'
@@ -145,6 +155,25 @@ function Get-UnLockedKind {
     $ext = [IO.Path]::GetExtension($Path).ToLowerInvariant()
     if ($script:ExtensionKinds.ContainsKey($ext)) { return $script:ExtensionKinds[$ext] }
     return ''
+}
+
+function Get-UnLockedExtensions {
+    <# 回傳某個 Office 程式（或全部）支援的副檔名，依字母排序。 #>
+    param([string]$Kind = '')
+    @($script:ExtensionKinds.Keys | Where-Object { -not $Kind -or $script:ExtensionKinds[$_] -eq $Kind } | Sort-Object)
+}
+
+function Get-UnLockedDialogFilter {
+    <# 檔案選擇視窗的篩選條件：全部支援的 Office 檔案／Excel／Word／PowerPoint／所有檔案。 #>
+    $pattern = { param($exts) (@($exts | ForEach-Object { '*' + $_ }) -join ';') }
+    $all = & $pattern (Get-UnLockedExtensions)
+    $parts = @("所有支援的 Office 檔案|$all")
+    foreach ($k in @(@('Excel', 'Excel 活頁簿'), @('Word', 'Word 文件'), @('PowerPoint', 'PowerPoint 簡報'))) {
+        $p = & $pattern (Get-UnLockedExtensions $k[0])
+        $parts += ('{0} ({1})|{1}' -f $k[1], $p)
+    }
+    $parts += '所有檔案 (*.*)|*.*'
+    $parts -join '|'
 }
 
 function Test-UnLockedSupported {

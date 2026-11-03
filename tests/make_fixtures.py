@@ -99,6 +99,24 @@ def docx_parts():
     }
 
 
+def pptx_parts(missing_slide=False):
+    P = "http://schemas.openxmlformats.org/presentationml/2006/main"
+    parts = {
+        "[Content_Types].xml": content_types([
+            ("ppt/presentation.xml", "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"),
+            ("ppt/slides/slide1.xml", "application/vnd.openxmlformats-officedocument.presentationml.slide+xml")]),
+        "_rels/.rels": rels([("rId1", R + "officeDocument", "ppt/presentation.xml")]),
+        "ppt/presentation.xml": (CT_HEAD + '<p:presentation xmlns:p="%s" '
+                                 'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+                                 '<p:sldIdLst><p:sldId id="256" r:id="rId1"/></p:sldIdLst></p:presentation>' % P),
+        "ppt/_rels/presentation.xml.rels": rels([("rId1", R + "slide", "slides/slide1.xml")]),
+        "ppt/slides/slide1.xml": (CT_HEAD + '<p:sld xmlns:p="%s"><p:cSld><p:spTree/></p:cSld></p:sld>' % P),
+    }
+    if missing_slide:
+        del parts["ppt/slides/slide1.xml"]
+    return parts
+
+
 def write_zip(name, parts, stored=()):
     path = os.path.join(OUT, name)
     with zipfile.ZipFile(path, "w") as z:
@@ -199,6 +217,13 @@ def main():
     write_zip("valid.docx", docx_parts())
     expected["valid.docx"] = {"Container": "OOXML", "Status": "OK", "DocKind": "Word"}
 
+    write_zip("valid.pptx", pptx_parts())
+    expected["valid.pptx"] = {"Container": "OOXML", "Status": "OK", "DocKind": "PowerPoint",
+                              "MainPart": "ppt/presentation.xml"}
+
+    write_zip("missingslide.pptx", pptx_parts(missing_slide=True))
+    expected["missingslide.pptx"] = {"Status": "CORRUPT", "DocKind": "PowerPoint", "IssueContains": "slide1.xml"}
+
     write_zip("labeled.xlsx", xlsx_parts(label=True))
     expected["labeled.xlsx"] = {"Status": "OK", "LabelId": LABEL_ID, "LabelSiteId": SITE_ID,
                                 "LabelName": "Public-Edit", "LabelMethod": "Privileged"}
@@ -252,6 +277,12 @@ def main():
 
     p = write_cfb("legacy.xls", [("Workbook", b"\x09\x08" * 4096)])
     expected["legacy.xls"] = {"Container": "CFB", "Status": "OK", "DocKind": "Excel"}
+    write_cfb("legacy.doc", [("WordDocument", b"\xec\xa5" * 2048), ("1Table", b"\0" * 4096)])
+    expected["legacy.doc"] = {"Container": "CFB", "Status": "OK", "DocKind": "Word"}
+
+    write_cfb("legacy.ppt", [("PowerPoint Document", b"\0\x0f" * 2048), ("Current User", b"\0" * 4096)])
+    expected["legacy.ppt"] = {"Container": "CFB", "Status": "OK", "DocKind": "PowerPoint"}
+
     raw = open(p, "rb").read()
     with open(os.path.join(OUT, "legacy_truncated.xls"), "wb") as f:
         f.write(raw[: 512 * 8])

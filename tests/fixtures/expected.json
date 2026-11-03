@@ -11,6 +11,17 @@
     "Status": "OK",
     "DocKind": "Word"
   },
+  "valid.pptx": {
+    "Container": "OOXML",
+    "Status": "OK",
+    "DocKind": "PowerPoint",
+    "MainPart": "ppt/presentation.xml"
+  },
+  "missingslide.pptx": {
+    "Status": "CORRUPT",
+    "DocKind": "PowerPoint",
+    "IssueContains": "slide1.xml"
+  },
   "labeled.xlsx": {
     "Status": "OK",
     "LabelId": "6f1c2c49-6b5a-4d1e-9a51-7a3c1e0d4b21",
@@ -67,6 +78,16 @@
     "Container": "CFB",
     "Status": "OK",
     "DocKind": "Excel"
+  },
+  "legacy.doc": {
+    "Container": "CFB",
+    "Status": "OK",
+    "DocKind": "Word"
+  },
+  "legacy.ppt": {
+    "Container": "CFB",
+    "Status": "OK",
+    "DocKind": "PowerPoint"
   },
   "legacy_truncated.xls": {
     "Container": "CFB",

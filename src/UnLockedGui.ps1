@@ -14,6 +14,9 @@ $script:LastResults = New-Object 'System.Collections.Generic.List[object]'
 $script:LastLogDir = ''
 $script:Scale = 1.0
 
+# 清單欄位位置
+$script:Col = @{ Name = 0; Type = 1; Folder = 2; Result = 3; Check = 4; Label = 5; Irm = 6; Message = 7 }
+
 function ScalePx([double]$px) { [int][Math]::Round($px * $script:Scale) }
 
 function New-Ctl {
@@ -129,7 +132,8 @@ function Add-LabelAndSelect {
 }
 
 function Invoke-ReadSampleLabel {
-    $ofd = New-Ctl OpenFileDialog @{ Title = '選擇已套用目標標籤（例如 Public\Public-Edit）的範例檔'; Filter = 'Office 檔案|*.xlsx;*.xlsm;*.xlsb;*.docx;*.docm;*.pptx;*.pptm|所有檔案|*.*' }
+    $labelExts = @(Get-UnLockedExtensions | Where-Object { $script:LegacyExtensions -notcontains $_ } | ForEach-Object { '*' + $_ }) -join ';'
+    $ofd = New-Ctl OpenFileDialog @{ Title = '選擇已套用目標標籤（例如 Public\Public-Edit）的範例檔'; Filter = ('Office 檔案 (xlsx/docx/pptx…)|{0}|所有檔案 (*.*)|*.*' -f $labelExts) }
     if ($ofd.ShowDialog($script:ui.Form) -ne 'OK') { return }
     $script:ui.Form.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
     try {
@@ -179,7 +183,9 @@ function Add-PathsToList {
     foreach ($it in $items) {
         if ($script:ItemMap.ContainsKey($it.Path)) { continue }
         $lvi = New-Object System.Windows.Forms.ListViewItem([IO.Path]::GetFileName($it.Path))
-        foreach ($t in @((Split-Path -Parent $it.Path), '', '', '', '', '')) { [void]$lvi.SubItems.Add($t) }
+        $kind = Get-UnLockedKind $it.Path
+        $typeText = '{0} ({1})' -f $kind, [IO.Path]::GetExtension($it.Path).TrimStart('.').ToLowerInvariant()
+        foreach ($t in @($typeText, (Split-Path -Parent $it.Path), '', '', '', '', '')) { [void]$lvi.SubItems.Add($t) }
         $lvi.Tag = $it
         [void]$lv.Items.Add($lvi)
         $script:ItemMap[$it.Path] = $lvi
@@ -187,12 +193,23 @@ function Add-PathsToList {
     }
     $lv.EndUpdate()
     Update-CountLabel
-    if ($items.Count -eq 0 -and $Paths.Count -gt 0) { Add-UiLog '沒有找到支援的 Office 檔案（xlsx/xlsm/xlsb/xls/docx/docm/doc/pptx/pptm/ppt …）' 'Warn' }
+    if ($items.Count -eq 0 -and $Paths.Count -gt 0) { Add-UiLog ('沒有找到支援的 Office 檔案。支援：' + ((Get-UnLockedExtensions) -join ' ')) 'Warn' }
     elseif ($added -gt 0) { Add-UiLog ("已加入 {0} 個檔案" -f $added) }
 }
 
 function Update-CountLabel {
-    $script:ui.CountLabel.Text = '共 {0} 個檔案' -f $script:ui.List.Items.Count
+    $n = $script:ui.List.Items.Count
+    if ($n -eq 0) {
+        $script:ui.CountLabel.Text = '尚未加入檔案：按「選擇檔案…」，或把檔案／資料夾拖曳到下方清單'
+        return
+    }
+    $counts = [ordered]@{ Excel = 0; Word = 0; PowerPoint = 0 }
+    foreach ($lvi in $script:ui.List.Items) {
+        $k = Get-UnLockedKind $lvi.Tag.Path
+        if ($counts.Contains($k)) { $counts[$k]++ }
+    }
+    $parts = @(foreach ($k in $counts.Keys) { if ($counts[$k]) { '{0} {1}' -f $k, $counts[$k] } })
+    $script:ui.CountLabel.Text = '共 {0} 個檔案（{1}）' -f $n, ($parts -join '、')
 }
 
 function Remove-SelectedItems {
@@ -220,11 +237,11 @@ function Update-UiRow {
     if ($Res.IrmAfter -and $Res.IrmAfter -ne $Res.IrmBefore) { $irm = "$($Res.IrmBefore) → $($Res.IrmAfter)" }
     $check = $Res.Check
     if ($Res.Repaired) { $check = '已修復；' + $check }
-    $lvi.SubItems[2].Text = $Res.Result
-    $lvi.SubItems[3].Text = $check
-    $lvi.SubItems[4].Text = $label
-    $lvi.SubItems[5].Text = $irm
-    $lvi.SubItems[6].Text = $Res.Message
+    $lvi.SubItems[$script:Col.Result].Text = $Res.Result
+    $lvi.SubItems[$script:Col.Check].Text = $check
+    $lvi.SubItems[$script:Col.Label].Text = $label
+    $lvi.SubItems[$script:Col.Irm].Text = $irm
+    $lvi.SubItems[$script:Col.Message].Text = $Res.Message
     $color = switch ($Res.Result) {
         '成功' { [System.Drawing.Color]::DarkGreen }
         '正常' { [System.Drawing.Color]::DarkGreen }
@@ -292,12 +309,14 @@ function Update-OutputControls {
     $folder = $script:ui.OptFolder.Checked
     $script:ui.OutputBox.Enabled = $folder
     $script:ui.BrowseBtn.Enabled = $folder
+    $script:ui.OpenOutBtn.Enabled = $folder
+    $script:ui.OutputHint.Enabled = $folder
     $script:ui.OptBackup.Enabled = -not $folder
 }
 
 function Set-UiBusy {
     param([bool]$Busy)
-    foreach ($k in @('FileBar', 'Options', 'CheckBtn', 'StartBtn', 'ExportBtn')) { $script:ui[$k].Enabled = -not $Busy }
+    foreach ($k in @('FileBar', 'Options', 'ExportGroup', 'CheckBtn', 'StartBtn', 'ExportBtn')) { $script:ui[$k].Enabled = -not $Busy }
     $script:ui.List.AllowDrop = -not $Busy
     $script:ui.StopBtn.Enabled = $Busy
     if (-not $Busy) { Update-OutputControls }
@@ -307,8 +326,7 @@ function Set-UiBusy {
 #  介面動作
 # ----------------------------------------------------------------------------
 function Invoke-AddFiles {
-    $ofd = New-Ctl OpenFileDialog @{ Multiselect = $true; Title = '選擇 Office 檔案'
-        Filter = 'Office 檔案|*.xlsx;*.xlsm;*.xlsb;*.xls;*.xltx;*.xltm;*.docx;*.docm;*.doc;*.dotx;*.dotm;*.pptx;*.pptm;*.ppt;*.ppsx;*.potx|所有檔案|*.*' }
+    $ofd = New-Ctl OpenFileDialog @{ Multiselect = $true; Title = '選擇要處理的 Office 檔案（可按住 Ctrl 或 Shift 一次選多個）'; Filter = (Get-UnLockedDialogFilter) }
     if ($ofd.ShowDialog($script:ui.Form) -eq 'OK') { Add-PathsToList -Paths $ofd.FileNames }
 }
 
@@ -318,7 +336,7 @@ function Invoke-AddFolder {
 }
 
 function Invoke-BrowseOutput {
-    $fbd = New-Ctl FolderBrowserDialog @{ Description = '選擇輸出資料夾（處理後的檔案會存到這裡）'; ShowNewFolderButton = $true }
+    $fbd = New-Ctl FolderBrowserDialog @{ Description = '選擇匯出路徑（處理後的檔案會存到這個資料夾）'; ShowNewFolderButton = $true }
     if ($script:ui.OutputBox.Text -and (Test-Path -LiteralPath $script:ui.OutputBox.Text)) { $fbd.SelectedPath = $script:ui.OutputBox.Text }
     if ($fbd.ShowDialog($script:ui.Form) -eq 'OK') { $script:ui.OutputBox.Text = $fbd.SelectedPath }
 }
@@ -365,9 +383,9 @@ function Start-UnLockedRun {
         }
         if ($script:ui.OptFolder.Checked) {
             $out = $script:ui.OutputBox.Text.Trim()
-            if (-not $out) { Show-Info '請選擇輸出資料夾。' 'Warning'; return }
+            if (-not $out) { Show-Info '請先在「③ 匯出路徑」選擇匯出資料夾。' 'Warning'; return }
             try { if (-not (Test-Path -LiteralPath $out)) { New-Item -ItemType Directory -Path $out -Force | Out-Null } }
-            catch { Show-Info ('無法建立輸出資料夾：' + $_.Exception.Message) 'Error'; return }
+            catch { Show-Info ('無法建立匯出資料夾：' + $_.Exception.Message) 'Error'; return }
         }
         else {
             $bk = if ($script:ui.OptBackup.Checked) { '（原檔會先備份到各資料夾下的 _UnLocked_Backup_日期時間 資料夾）' } else { '（注意：未勾選備份！）' }
@@ -407,8 +425,8 @@ function Start-UnLockedRun {
     $items = New-Object 'System.Collections.Generic.List[object]'
     foreach ($lvi in $script:ui.List.Items) {
         $items.Add($lvi.Tag)
-        for ($i = 2; $i -le 6; $i++) { $lvi.SubItems[$i].Text = '' }
-        $lvi.SubItems[2].Text = '等待中'
+        for ($i = $script:Col.Result; $i -le $script:Col.Message; $i++) { $lvi.SubItems[$i].Text = '' }
+        $lvi.SubItems[$script:Col.Result].Text = '等待中'
         $lvi.ForeColor = [System.Drawing.SystemColors]::WindowText
     }
 
@@ -451,7 +469,7 @@ function Update-UnLockedRun {
                 $script:ui.Status.Text = '處理中 {0} / {1}' -f $idx, $run.Sync.Total
                 if ($script:ItemMap.ContainsKey($evt.Data.Path)) {
                     $lvi = $script:ItemMap[$evt.Data.Path]
-                    $lvi.SubItems[2].Text = '處理中…'
+                    $lvi.SubItems[$script:Col.Result].Text = '處理中…'
                     $lvi.EnsureVisible()
                 }
             }
@@ -468,7 +486,9 @@ function Complete-UnLockedRun {
     if (-not $run.Sync.Done) { Add-UiLog '背景作業未正常結束，請檢查上方的錯誤訊息。' 'Error' }
     try { $run.PS.Dispose(); $run.RS.Dispose() } catch { }
     $script:Running = $null
-    foreach ($lvi in $script:ui.List.Items) { if ($lvi.SubItems[2].Text -in @('等待中', '處理中…')) { $lvi.SubItems[2].Text = '未處理' } }
+    foreach ($lvi in $script:ui.List.Items) {
+        if ($lvi.SubItems[$script:Col.Result].Text -in @('等待中', '處理中…')) { $lvi.SubItems[$script:Col.Result].Text = '未處理' }
+    }
     $script:ui.Progress.Value = $script:ui.Progress.Maximum
     $summary = @($script:LastResults | Group-Object Result | ForEach-Object { '{0} {1}' -f $_.Name, $_.Count }) -join '、'
     $script:ui.Status.Text = '完成：' + $summary
@@ -494,16 +514,17 @@ function New-UnLockedForm {
     $form.MinimumSize = New-Object System.Drawing.Size((ScalePx 900), (ScalePx 660))
     $script:ui.Form = $form
 
-    $root = New-Ctl TableLayoutPanel @{ Dock = 'Fill'; ColumnCount = 1; RowCount = 4; Padding = (& $pad 8 8 8 8) }
+    $root = New-Ctl TableLayoutPanel @{ Dock = 'Fill'; ColumnCount = 1; RowCount = 5; Padding = (& $pad 8 8 8 8) }
     [void]$root.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
-    [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 62)))
-    [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
-    [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
-    [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 38)))
+    [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 60)))   # ① 檔案
+    [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))     # ② 選項
+    [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))     # ③ 匯出路徑
+    [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))     # ④ 執行
+    [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 40)))   # 紀錄
     $form.Controls.Add($root)
 
     # ---- ① 檔案 ---------------------------------------------------------
-    $g1 = New-Ctl GroupBox @{ Text = '① 選擇檔案（可直接把檔案或資料夾拖曳到清單中）'; Dock = 'Fill'; Padding = (& $pad 6 4 6 6) }
+    $g1 = New-Ctl GroupBox @{ Text = '① 選擇檔案　支援 Excel（xlsx、xlsm、xlsb、xls…）、Word（docx、docm、doc…）、PowerPoint（pptx、pptm、ppt…）；可直接拖曳檔案或資料夾到清單'; Dock = 'Fill'; Padding = (& $pad 6 4 6 6) }
     $t1 = New-Ctl TableLayoutPanel @{ Dock = 'Fill'; ColumnCount = 1; RowCount = 2 }
     [void]$t1.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
     [void]$t1.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
@@ -513,14 +534,14 @@ function New-UnLockedForm {
     $script:ui.Recurse = New-Ctl CheckBox @{ Text = '包含子資料夾'; AutoSize = $true; Checked = $true; Margin = (& $pad 8 8 8 3) }
     $script:ui.CountLabel = New-Ctl Label @{ Text = '共 0 個檔案'; AutoSize = $true; Margin = (& $pad 16 9 3 3); ForeColor = [System.Drawing.Color]::DimGray }
     foreach ($c in @(
-            (New-Btn '新增檔案…' { Invoke-AddFiles }),
+            (New-Btn '選擇檔案…' { Invoke-AddFiles }),
             (New-Btn '新增資料夾…' { Invoke-AddFolder }),
             $script:ui.Recurse,
             (New-Btn '移除選取' { Remove-SelectedItems }),
             (New-Btn '清除全部' { Clear-AllItems }),
             $script:ui.CountLabel)) { [void]$bar.Controls.Add($c) }
     $lv = New-Ctl ListView @{ Dock = 'Fill'; View = 'Details'; FullRowSelect = $true; GridLines = $true; AllowDrop = $true; HideSelection = $false }
-    foreach ($col in @(@('檔案名稱', 230), @('所在資料夾', 210), @('結果', 80), @('結構檢查', 230), @('敏感度標籤', 200), @('限制存取', 130), @('說明', 380))) {
+    foreach ($col in @(@('檔案名稱', 230), @('類型', 120), @('所在資料夾', 200), @('結果', 80), @('結構檢查', 220), @('敏感度標籤', 190), @('限制存取', 130), @('說明', 360))) {
         [void]$lv.Columns.Add($col[0], (ScalePx $col[1]))
     }
     $lv.Add_DragEnter({ if ($_.Data.GetDataPresent([System.Windows.Forms.DataFormats]::FileDrop)) { $_.Effect = [System.Windows.Forms.DragDropEffects]::Copy } })
@@ -558,27 +579,46 @@ function New-UnLockedForm {
     $script:ui.OptIrm = New-Ctl CheckBox @{ Text = '移除限制存取（IRM）：設為「無限制存取」'; AutoSize = $true; Margin = (& $pad 3 6 3 3) }
     $script:ui.OptRepair = New-Ctl CheckBox @{ Text = '偵測檔案是否毀損，並自動修復（以 Office「開啟並修復」後重新儲存）'; AutoSize = $true; Margin = (& $pad 3 6 3 3) }
 
-    $rowE = New-Flow
-    $script:ui.OptFolder = New-Ctl RadioButton @{ Text = '另存到資料夾：'; AutoSize = $true; Margin = (& $pad 3 8 3 3) }
-    $script:ui.OutputBox = New-Ctl TextBox @{ Width = (ScalePx 400); Margin = (& $pad 3 5 3 3) }
-    $script:ui.BrowseBtn = New-Btn '瀏覽…' { Invoke-BrowseOutput }
-    $script:ui.OptInPlace = New-Ctl RadioButton @{ Text = '直接覆寫原檔'; AutoSize = $true; Margin = (& $pad 24 8 3 3) }
-    $script:ui.OptBackup = New-Ctl CheckBox @{ Text = '覆寫前先備份原檔'; AutoSize = $true; Margin = (& $pad 6 8 3 3) }
-    $script:ui.OptFolder.Add_CheckedChanged({ Update-OutputControls })
-    $script:ui.OptInPlace.Add_CheckedChanged({ Update-OutputControls })
-    foreach ($c in @((New-Ctl Label @{ Text = '輸出方式：'; AutoSize = $true; Margin = (& $pad 3 8 3 3) }), $script:ui.OptFolder, $script:ui.OutputBox, $script:ui.BrowseBtn, $script:ui.OptInPlace, $script:ui.OptBackup)) { [void]$rowE.Controls.Add($c) }
-
     $rowF = New-Flow
     $script:ui.Timeout = New-Ctl NumericUpDown @{ Minimum = 30; Maximum = 3600; Increment = 30; Value = 180; Width = (ScalePx 70); Margin = (& $pad 3 5 3 3) }
     $script:ui.OptDeep = New-Ctl CheckBox @{ Text = '「僅檢查」時也用 Office 實際開啟驗證（較慢，可找出只有 Excel 才會發現的內容錯誤）'; AutoSize = $true; Margin = (& $pad 24 8 3 3) }
     foreach ($c in @((New-Ctl Label @{ Text = '單檔逾時：'; AutoSize = $true; Margin = (& $pad 3 8 3 3) }), $script:ui.Timeout,
             (New-Ctl Label @{ Text = '秒'; AutoSize = $true; Margin = (& $pad 0 8 3 3) }), $script:ui.OptDeep)) { [void]$rowF.Controls.Add($c) }
 
-    foreach ($c in @($rowA, $rowB, $script:ui.OptIrm, $script:ui.OptRepair, $rowE, $rowF)) { [void]$t2.Controls.Add($c) }
+    foreach ($c in @($rowA, $rowB, $script:ui.OptIrm, $script:ui.OptRepair, $rowF)) { [void]$t2.Controls.Add($c) }
     $g2.Controls.Add($t2)
     [void]$root.Controls.Add($g2, 0, 1)
 
-    # ---- ③ 執行 ---------------------------------------------------------
+    # ---- ③ 匯出路徑 -----------------------------------------------------
+    $g3 = New-Ctl GroupBox @{ Text = '③ 匯出路徑'; Dock = 'Fill'; AutoSize = $true; AutoSizeMode = 'GrowAndShrink'; Padding = (& $pad 6 4 6 6) }
+    $script:ui.ExportGroup = $g3
+    $t3 = New-Ctl TableLayoutPanel @{ Dock = 'Fill'; ColumnCount = 1; AutoSize = $true; AutoSizeMode = 'GrowAndShrink' }
+    [void]$t3.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+
+    $rowE1 = New-Flow
+    $script:ui.OptFolder = New-Ctl RadioButton @{ Text = '匯出到資料夾：'; AutoSize = $true; Margin = (& $pad 3 8 3 3) }
+    $script:ui.OutputBox = New-Ctl TextBox @{ Width = (ScalePx 520); Margin = (& $pad 3 5 3 3) }
+    $script:ui.BrowseBtn = New-Btn '選擇匯出路徑…' { Invoke-BrowseOutput }
+    $script:ui.OpenOutBtn = New-Btn '開啟' { Invoke-OpenOutput }
+    foreach ($c in @($script:ui.OptFolder, $script:ui.OutputBox, $script:ui.BrowseBtn, $script:ui.OpenOutBtn)) { [void]$rowE1.Controls.Add($c) }
+
+    $script:ui.OutputHint = New-Ctl Label @{ AutoSize = $true; ForeColor = [System.Drawing.Color]::DimGray; Margin = (& $pad 24 0 3 4)
+        Text = '處理完成的檔案會以相同檔名存到這個資料夾，原始檔案不會被修改；以資料夾加入的檔案會保留原本的子資料夾結構。' }
+
+    $rowE2 = New-Flow
+    $script:ui.OptInPlace = New-Ctl RadioButton @{ Text = '不匯出，直接覆寫原始檔案'; AutoSize = $true; Margin = (& $pad 3 6 3 3) }
+    $script:ui.OptBackup = New-Ctl CheckBox @{ Text = '覆寫前先備份原檔'; AutoSize = $true; Margin = (& $pad 12 6 3 3) }
+    foreach ($c in @($script:ui.OptInPlace, $script:ui.OptBackup)) { [void]$rowE2.Controls.Add($c) }
+
+    # 兩個選項放在不同的容器，需自行維持「只能選一個」
+    $script:ui.OptFolder.Add_CheckedChanged({ if ($script:ui.OptFolder.Checked) { $script:ui.OptInPlace.Checked = $false }; Update-OutputControls })
+    $script:ui.OptInPlace.Add_CheckedChanged({ if ($script:ui.OptInPlace.Checked) { $script:ui.OptFolder.Checked = $false }; Update-OutputControls })
+
+    foreach ($c in @($rowE1, $script:ui.OutputHint, $rowE2)) { [void]$t3.Controls.Add($c) }
+    $g3.Controls.Add($t3)
+    [void]$root.Controls.Add($g3, 0, 2)
+
+    # ---- ④ 執行 ---------------------------------------------------------
     $rowG = New-Flow
     $script:ui.CheckBtn = New-Btn '僅檢查' { Start-UnLockedRun -Mode Check } 110
     $script:ui.StartBtn = New-Btn '開始處理' { Start-UnLockedRun -Mode Process } 130
@@ -588,13 +628,14 @@ function New-UnLockedForm {
     $script:ui.Progress = New-Ctl ProgressBar @{ Width = (ScalePx 260); Height = (ScalePx 22); Margin = (& $pad 12 8 3 3) }
     $script:ui.Status = New-Ctl Label @{ Text = '就緒'; AutoSize = $true; Margin = (& $pad 6 10 3 3) }
     $script:ui.ExportBtn = New-Btn '匯出報表…' { Invoke-ExportReport }
-    foreach ($c in @($script:ui.CheckBtn, $script:ui.StartBtn, $script:ui.StopBtn, $script:ui.Progress, $script:ui.Status,
-            (New-Btn '開啟輸出資料夾' { Invoke-OpenOutput }), $script:ui.ExportBtn)) { [void]$rowG.Controls.Add($c) }
-    [void]$root.Controls.Add($rowG, 0, 2)
+    foreach ($c in @((New-Ctl Label @{ Text = '④'; AutoSize = $true; Margin = (& $pad 3 10 0 3) }),
+            $script:ui.CheckBtn, $script:ui.StartBtn, $script:ui.StopBtn, $script:ui.Progress, $script:ui.Status,
+            (New-Btn '開啟匯出資料夾' { Invoke-OpenOutput }), $script:ui.ExportBtn)) { [void]$rowG.Controls.Add($c) }
+    [void]$root.Controls.Add($rowG, 0, 3)
 
     # ---- 紀錄 -----------------------------------------------------------
     $script:ui.LogBox = New-Ctl TextBox @{ Dock = 'Fill'; Multiline = $true; ReadOnly = $true; ScrollBars = 'Vertical'; WordWrap = $true; BackColor = [System.Drawing.SystemColors]::Window }
-    [void]$root.Controls.Add($script:ui.LogBox, 0, 3)
+    [void]$root.Controls.Add($script:ui.LogBox, 0, 4)
 
     $script:ui.Timer = New-Object System.Windows.Forms.Timer
     $script:ui.Timer.Interval = 250
@@ -626,13 +667,15 @@ function Show-UnLockedGui {
     $form = New-UnLockedForm
     Update-LabelCombo
     Set-UiFromConfig
+    Update-CountLabel
 
     Add-UiLog 'UnLocked 已就緒。使用步驟：'
-    Add-UiLog '  1. 加入檔案或資料夾（可拖曳）。'
-    Add-UiLog '  2. 第一次使用：在 Office 中手動將一個檔案設為 Public\Public-Edit 並儲存，再按「從範例檔讀取…」取得標籤。'
-    Add-UiLog '  3. 可先按「僅檢查」查看毀損與權限狀態，再按「開始處理」。'
+    Add-UiLog '  ① 按「選擇檔案…」或「新增資料夾…」加入 Excel / Word / PowerPoint 檔案（也可以直接拖曳）。'
+    Add-UiLog '  ② 選擇要處理的項目。第一次使用：先在 Office 中把一個檔案設為 Public\Public-Edit 並儲存，再按「從範例檔讀取…」取得標籤。'
+    Add-UiLog '  ③ 按「選擇匯出路徑…」指定處理後檔案要存放的資料夾。'
+    Add-UiLog '  ④ 可先按「僅檢查」查看毀損與權限狀態，再按「開始處理」。'
     Add-UiLog '  建議處理前先關閉所有 Excel / Word / PowerPoint 視窗。'
-    if (@($script:Cfg.Labels).Count -eq 0) { Add-UiLog '尚未設定目標標籤（步驟 2）。' 'Warn' }
+    if (@($script:Cfg.Labels).Count -eq 0) { Add-UiLog '尚未設定目標標籤（步驟 ②）。' 'Warn' }
     if ($InitialPaths) { Add-PathsToList -Paths $InitialPaths }
 
     [UnLocked.NativeMethods]::HideConsole()

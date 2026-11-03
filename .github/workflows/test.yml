@@ -42,11 +42,26 @@ jobs:
           Get-Content $out -Encoding UTF8 -ErrorAction SilentlyContinue
           Get-Content $err -Encoding UTF8 -ErrorAction SilentlyContinue
           if ($p.ExitCode -ne 0) { throw "UnLocked.exe exit code $($p.ExitCode)" }
+          $expected = @((Get-Content tests\fixtures\expected.json -Raw -Encoding UTF8 | ConvertFrom-Json).PSObject.Properties).Count
           $rows = @(Import-Csv -LiteralPath $csv -Encoding UTF8)
-          if ($rows.Count -ne 15) { throw "expected 15 report rows, got $($rows.Count)" }
+          if ($rows.Count -ne $expected) { throw "expected $expected report rows, got $($rows.Count)" }
           $extracted = Join-Path $env:LOCALAPPDATA 'UnLocked\app'
           Get-ChildItem $extracted -Recurse -File | Select-Object FullName, Length | Format-Table -AutoSize
           "UnLocked.exe smoke test passed: $($rows.Count) files checked"
+
+      - name: GUI smoke test and screenshot
+        shell: powershell
+        run: |
+          .\tests\Show-GuiPreview.ps1 -OutFile (Join-Path $env:RUNNER_TEMP 'unlocked-gui.png')
+          exit $LASTEXITCODE
+
+      - name: Upload GUI screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gui-preview
+          path: ${{ runner.temp }}/unlocked-gui.png
+          if-no-files-found: warn
 
       - name: Upload UnLocked.exe
         uses: actions/upload-artifact@v4
