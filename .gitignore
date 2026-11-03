@@ -1,0 +1,10 @@
+# 個人／公司設定（含標籤 GUID），不要提交
+config.json
+
+# 執行產生的檔案
+*.log
+_UnLocked_Output/
+_UnLocked_Backup_*/
+*.~unlocked.*
+
+__pycache__/

@@ -1,0 +1,22 @@
+{
+  "Labels": [
+    {
+      "Name": "Public\\Public-Edit",
+      "Id": "請填入標籤 GUID（用「從範例檔讀取」取得）",
+      "SiteId": "請填入租用戶 GUID"
+    }
+  ],
+  "SelectedLabelId": "",
+  "Justification": "檔案攜出／分析用途，依公司政策解除權限",
+  "AssignmentMethod": 1,
+  "SetLabel": true,
+  "RemoveIrm": true,
+  "Repair": true,
+  "OutputMode": "Folder",
+  "OutputFolder": "",
+  "Backup": true,
+  "BackupFolder": "",
+  "Recurse": true,
+  "TimeoutSeconds": 180,
+  "DeepCheck": false
+}
