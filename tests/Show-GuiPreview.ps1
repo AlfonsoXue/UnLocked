@@ -57,6 +57,20 @@ $form.StartPosition = 'Manual'
 $form.Location = New-Object System.Drawing.Point(0, 0)
 $form.Show()
 for ($i = 0; $i -lt 10; $i++) { [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 100 }
+
+# 版面檢查：檔案清單要有足夠高度，選項區不能被撐得過高（曾發生過的問題）
+$scale = $script:Scale
+$listH = $script:ui.List.Height
+$optH = $script:ui.Options.Height
+$expH = $script:ui.ExportGroup.Height
+Write-Host ("視窗 {0}x{1}；檔案清單高 {2}；處理選項高 {3}；匯出路徑高 {4}" -f $form.Width, $form.Height, $listH, $optH, $expH)
+if ($listH -lt 150 * $scale) { $problems += "檔案清單太矮（$listH px）" }
+if ($optH -gt 230 * $scale) { $problems += "「② 處理選項」太高（$optH px）" }
+if ($expH -gt 150 * $scale) { $problems += "「③ 匯出路徑」太高（$expH px）" }
+foreach ($b in @($script:ui.CheckBtn, $script:ui.StartBtn, $script:ui.ExportBtn, $script:ui.BrowseBtn)) {
+    $pt = $form.PointToClient($b.PointToScreen((New-Object System.Drawing.Point(0, 0))))
+    if ($pt.X + $b.Width -gt $form.ClientSize.Width) { $problems += "按鈕「$($b.Text)」超出視窗寬度" }
+}
 $bmp = New-Object System.Drawing.Bitmap($form.Width, $form.Height)
 $form.DrawToBitmap($bmp, (New-Object System.Drawing.Rectangle(0, 0, $form.Width, $form.Height)))
 $bmp.Save($OutFile, [System.Drawing.Imaging.ImageFormat]::Png)

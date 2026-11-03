@@ -38,7 +38,8 @@ function New-Btn {
 }
 
 function New-Flow {
-    $f = New-Ctl FlowLayoutPanel @{ Dock = 'Fill'; AutoSize = $true; AutoSizeMode = 'GrowAndShrink'; WrapContents = $true; Margin = (New-Object System.Windows.Forms.Padding(0)) }
+    # 不自動換行：可換行的 FlowLayoutPanel 會以「每個控制項一行」計算偏好高度，使外層群組被撐得過高
+    $f = New-Ctl FlowLayoutPanel @{ Dock = 'Fill'; AutoSize = $true; AutoSizeMode = 'GrowAndShrink'; WrapContents = $false; Margin = (New-Object System.Windows.Forms.Padding(0)) }
     $f
 }
 
@@ -513,17 +514,20 @@ function New-UnLockedForm {
     $pad = { param($a, $b, $c, $d) New-Object System.Windows.Forms.Padding((ScalePx $a), (ScalePx $b), (ScalePx $c), (ScalePx $d)) }
     $form = New-Ctl Form @{ Text = 'UnLocked － Office 檔案批次解除權限與修復'; StartPosition = 'CenterScreen'; AutoScaleMode = 'None'
         Font = (New-Object System.Drawing.Font('Microsoft JhengHei UI', 9)) }
-    $form.Size = New-Object System.Drawing.Size((ScalePx 1180), (ScalePx 840))
-    $form.MinimumSize = New-Object System.Drawing.Size((ScalePx 900), (ScalePx 660))
+    # 預設 1180×860，但不超過螢幕可用範圍（例如 1024×768 的筆電）
+    $wa = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+    $form.Size = New-Object System.Drawing.Size([Math]::Min((ScalePx 1180), $wa.Width), [Math]::Min((ScalePx 860), $wa.Height))
+    $form.MinimumSize = New-Object System.Drawing.Size([Math]::Min((ScalePx 900), $wa.Width), [Math]::Min((ScalePx 640), $wa.Height))
     $script:ui.Form = $form
 
-    $root = New-Ctl TableLayoutPanel @{ Dock = 'Fill'; ColumnCount = 1; RowCount = 5; Padding = (& $pad 8 8 8 8) }
+    $root = New-Ctl TableLayoutPanel @{ Dock = 'Fill'; ColumnCount = 1; RowCount = 6; Padding = (& $pad 8 8 8 8) }
     [void]$root.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
-    [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 60)))   # ① 檔案
+    [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 68)))   # ① 檔案
     [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))     # ② 選項
     [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))     # ③ 匯出路徑
-    [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))     # ④ 執行
-    [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 40)))   # 紀錄
+    [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))     # ④ 執行按鈕
+    [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))     # 進度
+    [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 32)))   # 紀錄
     $form.Controls.Add($root)
 
     # ---- ① 檔案 ---------------------------------------------------------
@@ -628,17 +632,21 @@ function New-UnLockedForm {
     $script:ui.StartBtn.Font = New-Object System.Drawing.Font($form.Font, [System.Drawing.FontStyle]::Bold)
     $script:ui.StopBtn = New-Btn '停止' { Stop-UnLockedRun } 90
     $script:ui.StopBtn.Enabled = $false
-    $script:ui.Progress = New-Ctl ProgressBar @{ Width = (ScalePx 260); Height = (ScalePx 22); Margin = (& $pad 12 8 3 3) }
-    $script:ui.Status = New-Ctl Label @{ Text = '就緒'; AutoSize = $true; Margin = (& $pad 6 10 3 3) }
+    $script:ui.Progress = New-Ctl ProgressBar @{ Width = (ScalePx 320); Height = (ScalePx 20); Margin = (& $pad 3 3 3 3) }
+    $script:ui.Status = New-Ctl Label @{ Text = '就緒'; AutoSize = $true; Margin = (& $pad 6 5 3 3) }
     $script:ui.ExportBtn = New-Btn '匯出報表…' { Invoke-ExportReport }
-    foreach ($c in @((New-Ctl Label @{ Text = '④'; AutoSize = $true; Margin = (& $pad 3 10 0 3) }),
-            $script:ui.CheckBtn, $script:ui.StartBtn, $script:ui.StopBtn, $script:ui.Progress, $script:ui.Status,
+    foreach ($c in @((New-Ctl Label @{ Text = '④ 執行：'; AutoSize = $true; Margin = (& $pad 3 10 0 3) }),
+            $script:ui.CheckBtn, $script:ui.StartBtn, $script:ui.StopBtn,
             (New-Btn '開啟匯出資料夾' { Invoke-OpenOutput }), $script:ui.ExportBtn)) { [void]$rowG.Controls.Add($c) }
     [void]$root.Controls.Add($rowG, 0, 3)
 
+    $rowH = New-Flow
+    foreach ($c in @((New-Ctl Label @{ Text = '進度：'; AutoSize = $true; Margin = (& $pad 3 5 0 3) }), $script:ui.Progress, $script:ui.Status)) { [void]$rowH.Controls.Add($c) }
+    [void]$root.Controls.Add($rowH, 0, 4)
+
     # ---- 紀錄 -----------------------------------------------------------
     $script:ui.LogBox = New-Ctl TextBox @{ Dock = 'Fill'; Multiline = $true; ReadOnly = $true; ScrollBars = 'Vertical'; WordWrap = $true; BackColor = [System.Drawing.SystemColors]::Window }
-    [void]$root.Controls.Add($script:ui.LogBox, 0, 4)
+    [void]$root.Controls.Add($script:ui.LogBox, 0, 5)
 
     $script:ui.Timer = New-Object System.Windows.Forms.Timer
     $script:ui.Timer.Interval = 250
