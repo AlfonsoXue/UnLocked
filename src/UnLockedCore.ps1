@@ -612,31 +612,49 @@ function Remove-DocumentIrm {
 function Read-LabelFromSampleFile {
     <#
         從「已手動套用目標標籤」的範例檔讀出標籤 ID 與租用戶 ID。
-        先直接解析檔案（不需 Office）；若檔案受保護或缺少名稱，再用 Office 讀取。
+        先直接解析檔案（不需 Office，包含受 IRM 保護的檔案）；檔案結構中找不到標籤時才用 Office 讀取。
+        回傳的物件多一個 Encrypts 屬性：該標籤是否會加密檔案（不適合當成解除權限的目標標籤）。
     #>
     param([Parameter(Mandatory)][string]$Path)
     Initialize-UnLocked
     $ins = Invoke-UnLockedInspection $Path
-    $label = $null
-    if ($ins.LabelId) { $label = New-UnLockedLabel -Name $ins.LabelName -Id $ins.LabelId -SiteId $ins.LabelSiteId }
-    if ($label -and $label.Name -and $label.SiteId) { return $label }
+    if ($ins.LabelId) {
+        # 新版標籤中繼資料不含名稱；名稱由使用者在確認視窗中填寫即可，不需要再開 Office
+        $label = New-UnLockedLabel -Name $ins.LabelName -Id $ins.LabelId -SiteId $ins.LabelSiteId
+        $label | Add-Member -NotePropertyName Encrypts -NotePropertyValue ([bool]$ins.LabelEncrypts)
+        return $label
+    }
+    if ($ins.Status -in @('CORRUPT', 'ERROR', 'PASSWORD')) {
+        throw ('無法讀取範例檔：' + (Format-InspectionSummary $ins))
+    }
 
     $kind = Get-UnLockedKind $Path
     $session = @{}
+    $label = $null
     try {
         $entry = Get-OfficeApp -Session $session -Kind $kind
-        $doc = Open-OfficeDocument -AppEntry $entry -Path $Path -ReadOnly $true
+        $usePw = -not $ins.IrmProtected
+        $doc = $null
+        try { $doc = Open-OfficeDocument -AppEntry $entry -Path $Path -ReadOnly $true -UsePassword $usePw }
+        catch {
+            if (-not ($ins.IrmProtected -or $ins.Status -eq 'UNKNOWN')) { throw }
+            # 受保護的檔案：顯示 Office 視窗重試（可能需要登入或選擇權限帳戶）
+            Set-OfficeInteractive -AppEntry $entry -On $true
+            try { $doc = Open-OfficeDocument -AppEntry $entry -Path $Path -ReadOnly $true -UsePassword $usePw -Interactive $true }
+            finally { try { Set-OfficeInteractive -AppEntry $entry -On $false } catch { } }
+        }
         try {
             $l = Get-DocumentLabel $doc
             if ($l -and $l.Id) {
-                $name = $l.Name
-                if (-not $name -and $label) { $name = $label.Name }
-                $site = $l.SiteId
-                if (-not $site -and $label) { $site = $label.SiteId }
-                $label = New-UnLockedLabel -Name $name -Id $l.Id -SiteId $site
+                $label = New-UnLockedLabel -Name $l.Name -Id $l.Id -SiteId $l.SiteId
+                $label | Add-Member -NotePropertyName Encrypts -NotePropertyValue $false
             }
         }
         finally { Close-OfficeDocument -AppEntry $entry -Doc $doc }
+    }
+    catch {
+        throw (('Office 無法開啟範例檔（{0}）。請改用一個「沒有加密」的範例檔：在 Excel 新增或開啟一個檔案，' +
+                '設定「敏感度 → Public → Public-Edit」後儲存到本機（例如桌面），再選擇該檔案。') -f (Get-FriendlyError $_))
     }
     finally { Close-OfficeSession $session }
     $label

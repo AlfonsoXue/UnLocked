@@ -152,6 +152,13 @@ function Invoke-ReadSampleLabel {
         Show-Info '這個檔案沒有敏感度標籤。請先在 Office 中手動設定標籤（常用 → 敏感度）並儲存後再試一次。' 'Warning'
         return
     }
+    if ($label.Encrypts) {
+        $ans = [System.Windows.Forms.MessageBox]::Show($script:ui.Form,
+            ("這個範例檔的標籤「{0}」會加密檔案，設成目標標籤後，處理過的檔案會被重新加密。`n`n" +
+                "建議改選一個已套用 Public\Public-Edit 的範例檔。仍要使用這個標籤嗎？") -f $(if ($label.Name) { $label.Name } else { $label.Id }),
+            'UnLocked', 'YesNo', 'Warning')
+        if ($ans -ne 'Yes') { return }
+    }
     if (-not $label.Name) { $label.Name = 'Public\Public-Edit' }
     $label = Show-LabelDialog -Initial $label     # 讓使用者確認／修改顯示名稱
     if ($label) {

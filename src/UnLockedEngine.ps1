@@ -98,7 +98,7 @@ function New-UnLockResult {
     }
 }
 
-function Invoke-UnLockFile {
+function Invoke-UnLockFileOnce {
     param(
         [Parameter(Mandatory)]$Item,
         [Parameter(Mandatory)][hashtable]$Options,
@@ -395,6 +395,54 @@ function Invoke-UnLockFile {
     }
     if ($r.RepairDetail -and $r.Result -ne '失敗') { $notes.Add('Office 修復紀錄：' + $r.RepairDetail) }
     $r.Message = ($notes -join '；')
+    return $r
+}
+
+function Invoke-UnLockFile {
+    <#
+        處理一個檔案。若移除限制存取後存檔，Office 依公司原則自動套用了「會加密的預設標籤」而使輸出檔又被加密，
+        自動對輸出檔再處理一次：此時檔案已有標籤，Office 不會再套用預設標籤，移除保護後即可維持「無限制存取」。
+    #>
+    param(
+        [Parameter(Mandatory)]$Item,
+        [Parameter(Mandatory)][hashtable]$Options,
+        [Parameter(Mandatory)][hashtable]$Session,
+        [Parameter(Mandatory)]$Watchdog,
+        [hashtable]$Sync
+    )
+    $r = Invoke-UnLockFileOnce -Item $Item -Options $Options -Session $Session -Watchdog $Watchdog -Sync $Sync
+    $eligible = ($Options.Mode -ne 'Check') -and $Options.RemoveIrm -and (-not $Options.IsRetry) -and
+        $r.Output -and $r.Result -eq '警告' -and $r.IrmAfter -eq '仍受限制'
+    if (-not $eligible) { return $r }
+
+    $post = Invoke-UnLockedInspection $r.Output
+    if (-not ($post.IrmProtected -and $post.LabelId -and $post.LabelEncrypts)) { return $r }
+    $lname = Resolve-UnLockLabelName $post.LabelId $post.LabelName $Options.KnownLabels
+    Send-UnLockEvent $Sync 'log' ('  存檔時 Office 自動套用了會加密的標籤「{0}」，自動再處理一次以移除保護…' -f $lname) -Level Warn
+
+    $retryOptions = @{}
+    foreach ($k in $Options.Keys) { $retryOptions[$k] = $Options[$k] }
+    $retryOptions.OutputMode = 'InPlace'      # 直接處理剛寫出的輸出檔
+    $retryOptions.Backup = $false
+    $retryOptions.Repair = $false
+    $retryOptions.SetLabel = $false           # 保留 Office 剛套用的標籤，只移除保護
+    $retryOptions.ForceResave = $false
+    $retryOptions.IsRetry = $true
+    $retryItem = [pscustomobject]@{ Path = $r.Output; BaseDir = [IO.Path]::GetDirectoryName($r.Output) }
+    $r2 = Invoke-UnLockFileOnce -Item $retryItem -Options $retryOptions -Session $Session -Watchdog $Watchdog -Sync $Sync
+
+    $post2 = Invoke-UnLockedInspection $r.Output
+    if ($post2.Status -ne 'PROTECTED' -and $post2.Status -ne 'CORRUPT' -and $r2.Result -ne '失敗') {
+        $r.Result = '成功'
+        $r.IrmAfter = '無限制'
+        $r.LabelAfter = $lname
+        $r.Message = ('第一次存檔時 Office 依公司原則自動套用了標籤「{0}」並重新加密；已自動再處理一次，保護已移除（標籤保留為「{0}」）' -f $lname)
+        Send-UnLockEvent $Sync 'log' '  第二次處理完成：已改為無限制存取' -Level OK
+    }
+    else {
+        $detail = if ($r2.Message) { $r2.Message } else { $r2.Result }
+        $r.Message = $r.Message + '；已自動再處理一次仍無法移除保護：' + $detail
+    }
     return $r
 }
 

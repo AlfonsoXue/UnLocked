@@ -106,6 +106,11 @@ Assert-That ([bool](Get-UnLockedDefaultConfig).IrmInteractive) '預設開啟 IRM
 Write-Host '== 範例檔標籤讀取（不需 Office） ==' -ForegroundColor Cyan
 $l = Read-LabelFromSampleFile -Path (Join-Path $fixtures 'labeled.xlsx')
 Assert-That ($l.Id -eq '6f1c2c49-6b5a-4d1e-9a51-7a3c1e0d4b21' -and $l.SiteId -eq '0e6c3c7a-1b2d-4c5e-8f90-a1b2c3d4e5f6' -and $l.Name -eq 'Public-Edit') 'Read-LabelFromSampleFile'
+Assert-That (-not $l.Encrypts) 'Read-LabelFromSampleFile：不加密的標籤'
+$l2 = Read-LabelFromSampleFile -Path (Join-Path $fixtures 'irm_label.xlsx')
+Assert-That ($l2.Id -eq '6f1c2c49-6b5a-4d1e-9a51-7a3c1e0d4b21' -and $l2.Encrypts -and $l2.Name -eq 'Internal - Internal (Contoso)') 'Read-LabelFromSampleFile：IRM 檔案直接讀出標籤（不需 Office）並標示會加密'
+$retryCmd = Get-Command Invoke-UnLockFile
+Assert-That ($null -ne $retryCmd -and $null -ne (Get-Command Invoke-UnLockFileOnce)) '自動第二次處理的包裝函式存在'
 
 Write-Host '== 檢查模式批次（不需 Office） ==' -ForegroundColor Cyan
 $sync = New-UnLockSync
