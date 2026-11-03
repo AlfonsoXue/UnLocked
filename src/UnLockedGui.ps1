@@ -22,7 +22,10 @@ function ScalePx([double]$px) { [int][Math]::Round($px * $script:Scale) }
 function New-Ctl {
     param([string]$Type, [hashtable]$Props = @{})
     $c = New-Object ("System.Windows.Forms.$Type")
-    foreach ($k in $Props.Keys) { $c.$k = $Props[$k] }
+    # 一般 @{} 的順序不固定；範圍類屬性必須先設定（例如 NumericUpDown 要先設 Maximum 才能設 Value）
+    $first = @('Minimum', 'Maximum')
+    foreach ($k in $first) { if ($Props.ContainsKey($k)) { $c.$k = $Props[$k] } }
+    foreach ($k in $Props.Keys) { if ($first -notcontains $k) { $c.$k = $Props[$k] } }
     $c
 }
 
