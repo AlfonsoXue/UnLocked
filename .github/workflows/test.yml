@@ -52,8 +52,17 @@ jobs:
       - name: GUI smoke test and screenshot
         shell: powershell
         run: |
-          .\tests\Show-GuiPreview.ps1 -OutFile (Join-Path $env:RUNNER_TEMP 'unlocked-gui.png')
-          exit $LASTEXITCODE
+          $png = Join-Path $env:RUNNER_TEMP 'unlocked-gui.png'
+          .\tests\Show-GuiPreview.ps1 -OutFile $png
+          $code = $LASTEXITCODE
+          if (Test-Path $png) {
+            # 也把截圖以 base64 印在紀錄中（無法下載 artifact 時可從紀錄還原）
+            $b64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($png))
+            Write-Host "GUIPNG-BEGIN $($b64.Length)"
+            for ($i = 0; $i -lt $b64.Length; $i += 4000) { Write-Host ('GUIPNG:' + $b64.Substring($i, [Math]::Min(4000, $b64.Length - $i))) }
+            Write-Host 'GUIPNG-END'
+          }
+          exit $code
 
       - name: Upload GUI screenshot
         if: always()
