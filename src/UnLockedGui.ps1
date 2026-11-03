@@ -602,13 +602,13 @@ function New-UnLockedForm {
     $rowC = New-Flow
     $script:ui.OptIrm = New-Ctl CheckBox @{ Text = '移除限制存取（IRM）→ 無限制存取'; AutoSize = $true; Margin = (& $pad 3 6 3 3) }
     $script:ui.OptRepair = New-Ctl CheckBox @{ Text = '偵測毀損並自動修復'; AutoSize = $true; Margin = (& $pad 20 6 3 3) }
-    $script:ui.OptInteractive = New-Ctl CheckBox @{ Text = 'IRM 檔案無法在背景開啟時，顯示 Office 視窗重試'; AutoSize = $true; Margin = (& $pad 20 6 3 3) }
+    $script:ui.OptInteractive = New-Ctl CheckBox @{ Text = '無法在背景開啟時，顯示 Office 視窗重試'; AutoSize = $true; Margin = (& $pad 20 6 3 3) }
     foreach ($c in @($script:ui.OptIrm, $script:ui.OptRepair, $script:ui.OptInteractive)) { [void]$rowC.Controls.Add($c) }
     $tips = New-Object System.Windows.Forms.ToolTip
     $tips.AutoPopDelay = 20000
     $tips.SetToolTip($script:ui.OptIrm, '等同 Office「保護 → 限制存取 → 無限制存取」。需要您是檔案擁有者或具完整控制權限。')
     $tips.SetToolTip($script:ui.OptRepair, '先檢查檔案結構；有毀損時以 Office「開啟並修復」開啟並重新儲存（Excel 最後會嘗試只擷取資料）。')
-    $tips.SetToolTip($script:ui.OptInteractive, "受 IRM 保護的檔案第一次開啟時，Office 可能需要登入或選擇權限帳戶。`n勾選後，背景開啟失敗時會顯示 Office 視窗讓您完成操作，之後自動切回背景繼續處理。")
+    $tips.SetToolTip($script:ui.OptInteractive, "受 IRM 保護的檔案第一次開啟時，Office 可能需要登入或選擇權限帳戶；一般檔案開啟失敗時，Office 視窗也會顯示實際的錯誤原因。`n勾選後，背景開啟失敗時會顯示 Office 視窗讓您完成操作，之後自動切回背景繼續處理。")
     $script:ui.ToolTip = $tips
 
     $rowF = New-Flow

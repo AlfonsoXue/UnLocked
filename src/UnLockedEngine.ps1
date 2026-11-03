@@ -46,7 +46,9 @@ function Resolve-UnLockLabelName {
     param([string]$Id, [string]$Name, $Known)
     if (-not $Id) { return '(無標籤)' }
     foreach ($l in @($Known)) { if ($l -and $l.Id -eq $Id -and $l.Name) { return $l.Name } }
-    if ($Name) { return $Name }
+    if ($Name) { Add-LabelNameToCache -Id $Id -Name $Name; return $Name }
+    $cache = Get-LabelNameCache
+    if ($cache.ContainsKey($Id)) { return $cache[$Id] }
     return $Id
 }
 
@@ -72,12 +74,35 @@ function Initialize-ParentFolder {
 }
 
 function Move-UnLockFileOver {
-    param([string]$Source, [string]$Destination)
-    if ([IO.File]::Exists($Destination)) {
-        [IO.File]::SetAttributes($Destination, [IO.FileAttributes]::Normal)
-        [IO.File]::Delete($Destination)
+    <# 以 Source 取代 Destination；目標檔被其他程式鎖住時重試數次，仍失敗則回傳 $false。 #>
+    param([string]$Source, [string]$Destination, [int]$Retries = 5)
+    for ($i = 0; $i -lt $Retries; $i++) {
+        try {
+            if ([IO.File]::Exists($Destination)) {
+                [IO.File]::SetAttributes($Destination, [IO.FileAttributes]::Normal)
+                [IO.File]::Delete($Destination)
+            }
+            [IO.File]::Move($Source, $Destination)
+            return $true
+        }
+        catch {
+            if (-not (Test-UnLockedSharingViolation $_)) { throw }
+            Start-Sleep -Milliseconds 800
+        }
     }
-    [IO.File]::Move($Source, $Destination)
+    return $false
+}
+
+function Get-UnLockAlternatePath {
+    <# 原檔無法取代時的另存檔名：名稱_無限制存取.xlsx、名稱_無限制存取 (2).xlsx … #>
+    param([string]$Path)
+    $dir = [IO.Path]::GetDirectoryName($Path)
+    $base = [IO.Path]::GetFileNameWithoutExtension($Path) + '_無限制存取'
+    $ext = [IO.Path]::GetExtension($Path)
+    $candidate = [IO.Path]::Combine($dir, $base + $ext)
+    $n = 2
+    while ([IO.File]::Exists($candidate)) { $candidate = [IO.Path]::Combine($dir, ('{0} ({1}){2}' -f $base, $n, $ext)); $n++ }
+    $candidate
 }
 
 function New-UnLockResult {
@@ -117,6 +142,7 @@ function Invoke-UnLockFileOnce {
 
     # ---- 1. 結構檢查 ----------------------------------------------------
     $pre = Invoke-UnLockedInspection $path
+    if ($pre.LabelId -and $pre.LabelName) { Add-LabelNameToCache -Id $pre.LabelId -Name $pre.LabelName }
     $r.Check = Format-InspectionSummary $pre
     if ($pre.Container -in @('OOXML', 'CFB')) { $r.IrmBefore = if ($pre.IrmProtected) { '受限制' } else { '無限制' } }
     if ($pre.LabelId) { $r.LabelBefore = Resolve-UnLockLabelName $pre.LabelId $pre.LabelName $Options.KnownLabels }
@@ -139,6 +165,36 @@ function Invoke-UnLockFileOnce {
         return $r
     }
 
+    if (-not $isCheck) {
+        $dest0 = Get-UnLockDestination -Item $Item -Options $Options
+        $inPlace0 = [string]::Equals([IO.Path]::GetFullPath($dest0), [IO.Path]::GetFullPath($path), [StringComparison]::OrdinalIgnoreCase)
+
+        # 結構正常的 Open XML 檔（ZIP 格式不可能帶 IRM 或開啟密碼）且標籤已符合 → 不需要開 Office
+        $labelOk = (-not ($Options.SetLabel -and $target)) -or ($pre.LabelId -and $pre.LabelId -eq $target.Id)
+        if ($pre.Container -eq 'OOXML' -and $pre.Status -eq 'OK' -and $labelOk -and -not $Options.ForceResave) {
+            $r.IrmAfter = $r.IrmBefore
+            if ($Options.SetLabel -and $target) { $r.LabelAfter = $target.Name }
+            if ($inPlace0) {
+                $r.Message = '檔案已是無限制存取、結構正常，標籤也不需變更'
+            }
+            else {
+                Initialize-ParentFolder $dest0
+                Copy-Item -LiteralPath $path -Destination $dest0 -Force
+                $r.Output = $dest0
+                $r.Message = '檔案已是無限制存取、結構正常，標籤也不需變更，已直接複製到匯出資料夾'
+            }
+            $r.Result = '無需變更'
+            return $r
+        }
+
+        # 覆寫原檔前先確認檔案沒有被其他程式（例如自己開著的 Excel）鎖住
+        if ($inPlace0 -and (Test-UnLockedFileLocked $path)) {
+            $r.Result = '略過'
+            $r.Message = '檔案正被其他程式使用（可能已在 Excel 中開啟），請先關閉這個檔案再處理'
+            return $r
+        }
+    }
+
     # ---- 2. 以 Office 開啟（必要時修復） ---------------------------------
     $entry = $null
     $doc = $null
@@ -152,16 +208,20 @@ function Invoke-UnLockFileOnce {
         # 開啟順序：一般 →（受 IRM 保護時）顯示 Office 視窗重試 → 修復 → 僅擷取資料（Excel）
         # 受 IRM 保護的檔案不傳假密碼，否則 Office 會改用密碼解密而開啟失敗
         $protectedLike = $pre.IrmProtected -or $pre.Status -eq 'UNKNOWN'
-        $usePw = -not $pre.IrmProtected
-        $canInteract = $protectedLike -and $Options.IrmInteractive
+        # 假密碼只用在舊版二進位格式（xls/doc/ppt，無法事先判斷是否有密碼）；
+        # Open XML 與 IRM 檔案傳入密碼會讓 Office 開啟失敗（0x800A03EC）
+        $usePw = ($pre.Container -eq 'CFB') -and -not $pre.IrmProtected
+        $canInteract = [bool]$Options.IrmInteractive
         $attempts = New-Object 'System.Collections.Generic.List[object]'
         $repairFirst = (-not $isCheck) -and $Options.Repair -and $pre.IsCorrupt
         if (-not $repairFirst) { $attempts.Add(@{ Mode = 'Normal'; Interactive = $false }) }
-        if ($canInteract) { $attempts.Add(@{ Mode = 'Normal'; Interactive = $true }) }
+        if ($protectedLike -and $canInteract) { $attempts.Add(@{ Mode = 'Normal'; Interactive = $true }) }
         if (-not $isCheck -and $Options.Repair) {
-            $attempts.Add(@{ Mode = 'Repair'; Interactive = $canInteract })
-            if ($kind -eq 'Excel') { $attempts.Add(@{ Mode = 'Extract'; Interactive = $canInteract }) }
+            $attempts.Add(@{ Mode = 'Repair'; Interactive = ($protectedLike -and $canInteract) })
+            if ($kind -eq 'Excel') { $attempts.Add(@{ Mode = 'Extract'; Interactive = ($protectedLike -and $canInteract) }) }
         }
+        # 一般檔案：背景方式都失敗時，最後顯示 Office 視窗再試一次，讓使用者看到 Office 的實際訊息
+        if (-not $protectedLike -and $canInteract) { $attempts.Add(@{ Mode = 'Normal'; Interactive = $true }) }
 
         $usedMode = $null
         $openError = $null
@@ -195,9 +255,9 @@ function Invoke-UnLockFileOnce {
             if ($pre.IrmProtected) {
                 $src = Format-ProtectionSource $pre
                 $why += ('。受 IRM 保護的檔案{0}無法由程式開啟，可能原因：' -f $src) +
-                '(1) 您對此檔案的權限不包含「以程式設計方式存取」，Office 會拒絕程式開啟——請用 Excel 手動開啟此檔案，到「檔案 → 資訊 → 檢視權限」確認；' +
-                '(2) 需要登入或選擇權限帳戶——請先手動開啟一次此檔案；(3) 您的帳戶沒有開啟權限；' +
-                '(4) 公司的 DRM／資安軟體禁止程式自動開啟受保護的檔案。(1)(3)(4) 需請檔案擁有者或資訊部門協助'
+                '(1) 尚未取得此檔案的授權——請先用 Excel 手動開啟一次此檔案（取得授權）並關閉，再用本工具處理；' +
+                '(2) 您對此檔案的權限不包含「以程式設計方式存取」，Office 會拒絕程式開啟——請手動開啟後到「檔案 → 資訊 → 檢視權限」確認；' +
+                '(3) 您的帳戶沒有開啟權限；(4) 公司的 DRM／資安軟體禁止程式自動開啟受保護的檔案。(2)(3)(4) 需請檔案擁有者或資訊部門協助'
             }
             if ($isCheck) {
                 $r.Result = if ($pre.IrmProtected) { '無法開啟' } else { '需修復' }
@@ -312,9 +372,18 @@ function Invoke-UnLockFileOnce {
                 Copy-Item -LiteralPath $path -Destination $bak -Force
                 Send-UnLockEvent $Sync 'log' ('  原檔已備份至 ' + $bak)
             }
-            Move-UnLockFileOver -Source $tmp -Destination $dest
+            if (Move-UnLockFileOver -Source $tmp -Destination $dest) {
+                $r.Output = $dest
+            }
+            else {
+                # 原檔被鎖住：不要丟掉處理結果，改存在原檔旁邊
+                $alt = Get-UnLockAlternatePath $dest
+                [void](Move-UnLockFileOver -Source $tmp -Destination $alt -Retries 1)
+                $r.Output = $alt
+                $notes.Add(('原檔正被其他程式使用（可能已在 Excel 中開啟），無法取代；處理後的檔案已另存為「{0}」' -f [IO.Path]::GetFileName($alt)))
+                $warn = $true
+            }
             $tmp = $null
-            $r.Output = $dest
         }
         else {
             Close-OfficeDocument -AppEntry $entry -Doc $doc

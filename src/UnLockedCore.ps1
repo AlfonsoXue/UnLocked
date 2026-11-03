@@ -149,6 +149,69 @@ function Add-UnLockedLabelToConfig {
 }
 
 # ----------------------------------------------------------------------------
+#  標籤名稱快取：新版標籤中繼資料只有 GUID；在 IRM 發佈授權中看過的名稱記下來，之後顯示名稱
+# ----------------------------------------------------------------------------
+$script:LabelNameCache = $null
+
+function Get-LabelNameCachePath { Join-Path (Split-Path -Parent (Get-UnLockedUserConfigPath)) 'labelnames.json' }
+
+function Get-LabelNameCache {
+    if ($null -eq $script:LabelNameCache) {
+        $script:LabelNameCache = @{}
+        $p = Get-LabelNameCachePath
+        if (Test-Path -LiteralPath $p) {
+            try {
+                $j = [IO.File]::ReadAllText($p, [Text.Encoding]::UTF8) | ConvertFrom-Json
+                foreach ($prop in $j.PSObject.Properties) { $script:LabelNameCache[$prop.Name] = [string]$prop.Value }
+            }
+            catch { }
+        }
+    }
+    $script:LabelNameCache
+}
+
+function Add-LabelNameToCache {
+    param([string]$Id, [string]$Name)
+    if (-not $Id -or -not $Name -or $Name -eq $Id) { return }
+    $cache = Get-LabelNameCache
+    if ($cache.ContainsKey($Id) -and $cache[$Id] -eq $Name) { return }
+    $cache[$Id] = $Name
+    try {
+        $p = Get-LabelNameCachePath
+        $dir = Split-Path -Parent $p
+        if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        [IO.File]::WriteAllText($p, ([pscustomobject]$cache | ConvertTo-Json), (New-Object Text.UTF8Encoding($true)))
+    }
+    catch { }
+}
+
+# ----------------------------------------------------------------------------
+#  檔案鎖定
+# ----------------------------------------------------------------------------
+function Test-UnLockedSharingViolation {
+    <# 是否為「檔案正被其他程式使用」(ERROR_SHARING_VIOLATION / ERROR_LOCK_VIOLATION) #>
+    param($ErrorRecord)
+    $ex = $ErrorRecord
+    if ($ex -is [System.Management.Automation.ErrorRecord]) { $ex = $ex.Exception }
+    while ($ex) {
+        if ($ex.HResult -in @(-2147024864, -2147024863)) { return $true }
+        $ex = $ex.InnerException
+    }
+    return $false
+}
+
+function Test-UnLockedFileLocked {
+    <# 檔案是否正被其他程式開啟（例如 Excel）。沒有寫入權限等其他錯誤不算鎖定。 #>
+    param([string]$Path)
+    try {
+        $fs = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        $fs.Close()
+        return $false
+    }
+    catch { return (Test-UnLockedSharingViolation $_) }
+}
+
+# ----------------------------------------------------------------------------
 #  檔案列舉與結構檢查
 # ----------------------------------------------------------------------------
 function Get-UnLockedKind {
