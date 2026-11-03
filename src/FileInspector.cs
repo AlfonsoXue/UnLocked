@@ -531,24 +531,25 @@ namespace UnLocked
         /// <summary>從 IRM 發佈授權 (XrML) 取出保護名稱與權限伺服器。只讀取未加密的中繼資料。</summary>
         static void ParsePublishingLicense(byte[] b, InspectResult r)
         {
-            string t16 = Encoding.Unicode.GetString(b);
-            string t8 = Encoding.UTF8.GetString(b);
-            string t = CountChar(t16, '<') > CountChar(t8, '<') ? t16 : t8;
-            Match m = PlNameRegex.Match(t);
-            if (m.Success) r.ProtectionName = m.Groups[1].Value.Trim();
-            Match u = RmsUrlRegex.Match(t);
-            if (u.Success)
+            // 發佈授權可能是 UTF-8 或 UTF-16LE，兩種解碼都試
+            string[] texts = new string[] { Encoding.UTF8.GetString(b), Encoding.Unicode.GetString(b) };
+            foreach (string t in texts)
             {
-                r.RmsServer = u.Groups[1].Value.ToLowerInvariant();
-                r.RmsKind = r.RmsServer.EndsWith("aadrm.com", StringComparison.OrdinalIgnoreCase) ? "Azure RMS" : "AD RMS";
+                if (r.ProtectionName.Length == 0)
+                {
+                    Match m = PlNameRegex.Match(t);
+                    if (m.Success) r.ProtectionName = m.Groups[1].Value.Trim();
+                }
+                if (r.RmsServer.Length == 0)
+                {
+                    Match u = RmsUrlRegex.Match(t);
+                    if (u.Success)
+                    {
+                        r.RmsServer = u.Groups[1].Value.ToLowerInvariant();
+                        r.RmsKind = r.RmsServer.EndsWith("aadrm.com", StringComparison.OrdinalIgnoreCase) ? "Azure RMS" : "AD RMS";
+                    }
+                }
             }
-        }
-
-        static int CountChar(string s, char c)
-        {
-            int n = 0;
-            foreach (char ch in s) if (ch == c) n++;
-            return n;
         }
 
         static bool IsXmlPart(string name)

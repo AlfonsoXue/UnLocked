@@ -228,13 +228,13 @@ def write_cfb(name, tree):
     return path
 
 
-def publishing_license(name, host):
-    """模擬 IRM 發佈授權 (XrML，UTF-16LE)：只含本工具會讀取的中繼資料。"""
+def publishing_license(name, host, encoding="utf-16-le"):
+    """模擬 IRM 發佈授權 (XrML，UTF-16LE 或 UTF-8)：只含本工具會讀取的中繼資料。"""
     xml = ('<?xml version="1.0"?><XrML><BODY type="Microsoft Rights Label"><ISSUER><OBJECT type="DRM-Server">'
            '<NAME>DRM Server Cluster</NAME><ADDRESS type="URL">https://%s/_wmcs/licensing</ADDRESS></OBJECT></ISSUER>'
            '<WORK><METADATA><NAME>LCID 1033:NAME %s:DESCRIPTION 測試用範本;</NAME></METADATA></WORK></BODY></XrML>'
            % (host, name))
-    return b"\x08\0\0\0" + xml.encode("utf-16-le") + b"\0" * 64
+    return b"\x08\0\0\0" + xml.encode(encoding) + b"\0" * 64
 
 
 def main():
@@ -324,7 +324,7 @@ def main():
         ("\x06DataSpaces", [
             ("DataSpaceMap", b"\x08" * 104),
             ("DataSpaceInfo", [("DRMEncryptedDataSpace", b"\x01" * 56)]),
-            ("TransformInfo", [("DRMEncryptedTransform", [("\x06Primary", publishing_license("ADRMS template", "rms.contoso.example"))])])])])
+            ("TransformInfo", [("DRMEncryptedTransform", [("\x06Primary", publishing_license("ADRMS template", "rms.contoso.example", "utf-8"))])])])])
     expected["irm_adrms.xlsx"] = {"Container": "CFB", "Status": "PROTECTED", "IrmProtected": True, "LabelId": "",
                                   "LabelEncrypts": False, "RmsKind": "AD RMS", "RmsServer": "rms.contoso.example"}
 
