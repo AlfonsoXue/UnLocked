@@ -1,0 +1,102 @@
+name: test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows-powershell:
+    name: Windows PowerShell 5.1
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run tests
+        shell: powershell
+        run: |
+          $PSVersionTable.PSVersion
+          .\tests\Test-UnLocked.ps1
+          exit $LASTEXITCODE
+
+  build-exe:
+    name: Build UnLocked.exe
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        shell: cmd
+        run: build.bat
+
+      - name: Smoke test (command-line mode, check only)
+        shell: powershell
+        run: |
+          $fx  = (Resolve-Path tests\fixtures).Path
+          $csv = Join-Path $env:RUNNER_TEMP 'smoke.csv'
+          $out = Join-Path $env:RUNNER_TEMP 'out.txt'
+          $err = Join-Path $env:RUNNER_TEMP 'err.txt'
+          $p = Start-Process -FilePath (Resolve-Path dist\UnLocked.exe) -Wait -PassThru -NoNewWindow `
+               -ArgumentList @('-NoGui', '-CheckOnly', "`"$fx`"", '-ReportPath', "`"$csv`"") `
+               -RedirectStandardOutput $out -RedirectStandardError $err
+          Get-Content $out -Encoding UTF8 -ErrorAction SilentlyContinue
+          Get-Content $err -Encoding UTF8 -ErrorAction SilentlyContinue
+          if ($p.ExitCode -ne 0) { throw "UnLocked.exe exit code $($p.ExitCode)" }
+          $expected = @((Get-Content tests\fixtures\expected.json -Raw -Encoding UTF8 | ConvertFrom-Json).PSObject.Properties).Count
+          $rows = @(Import-Csv -LiteralPath $csv -Encoding UTF8)
+          if ($rows.Count -ne $expected) { throw "expected $expected report rows, got $($rows.Count)" }
+          $extracted = Join-Path $env:LOCALAPPDATA 'UnLocked\app'
+          Get-ChildItem $extracted -Recurse -File | Select-Object FullName, Length | Format-Table -AutoSize
+          "UnLocked.exe smoke test passed: $($rows.Count) files checked"
+
+      - name: GUI smoke test and screenshot
+        shell: powershell
+        run: |
+          .\tests\Show-GuiPreview.ps1 -OutFile (Join-Path $env:RUNNER_TEMP 'unlocked-gui.png')
+          exit $LASTEXITCODE
+
+      - name: Upload GUI screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gui-preview
+          path: ${{ runner.temp }}/unlocked-gui.png
+          if-no-files-found: warn
+
+      - name: Upload UnLocked.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: UnLocked-exe
+          path: |
+            dist/UnLocked.exe
+            README.md
+            config.sample.json
+          if-no-files-found: error
+
+  # 手動執行（Actions → test → Run workflow），或 commit 訊息含 [screenshot] 時：
+  # 重新產生 README 用的介面截圖並提交到該分支
+  update-screenshot:
+    name: Update docs/screenshot.png
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && contains(github.event.head_commit.message, '[screenshot]'))
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Render GUI screenshot
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force docs | Out-Null
+          .\tests\Show-GuiPreview.ps1 -OutFile (Join-Path (Resolve-Path docs) 'screenshot.png')
+          exit $LASTEXITCODE
+
+      - name: Commit screenshot
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/screenshot.png
+          if git diff --cached --quiet; then echo "screenshot unchanged"; exit 0; fi
+          git commit -m "Update GUI screenshot [skip ci]"
+          git push

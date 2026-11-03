@@ -1,0 +1,96 @@
+{
+  "valid.xlsx": {
+    "Container": "OOXML",
+    "Status": "OK",
+    "DocKind": "Excel",
+    "MainPart": "xl/workbook.xml",
+    "IrmProtected": false
+  },
+  "valid.docx": {
+    "Container": "OOXML",
+    "Status": "OK",
+    "DocKind": "Word"
+  },
+  "valid.pptx": {
+    "Container": "OOXML",
+    "Status": "OK",
+    "DocKind": "PowerPoint",
+    "MainPart": "ppt/presentation.xml"
+  },
+  "missingslide.pptx": {
+    "Status": "CORRUPT",
+    "DocKind": "PowerPoint",
+    "IssueContains": "slide1.xml"
+  },
+  "labeled.xlsx": {
+    "Status": "OK",
+    "LabelId": "6f1c2c49-6b5a-4d1e-9a51-7a3c1e0d4b21",
+    "LabelSiteId": "0e6c3c7a-1b2d-4c5e-8f90-a1b2c3d4e5f6",
+    "LabelName": "Public-Edit",
+    "LabelMethod": "Privileged"
+  },
+  "truncated.xlsx": {
+    "Container": "OOXML",
+    "Status": "CORRUPT",
+    "IssueContains": "中央目錄"
+  },
+  "badxml.xlsx": {
+    "Status": "CORRUPT",
+    "IssueContains": "XML 格式錯誤"
+  },
+  "badchar.xlsx": {
+    "Status": "CORRUPT",
+    "IssueContains": "sheet1.xml"
+  },
+  "missingpart.xlsx": {
+    "Status": "CORRUPT",
+    "IssueContains": "sheet2.xml"
+  },
+  "nocontenttypes.xlsx": {
+    "Status": "CORRUPT",
+    "IssueContains": "[Content_Types].xml"
+  },
+  "crc.xlsx": {
+    "Status": "CORRUPT",
+    "IssueContains": "CRC"
+  },
+  "empty.xlsx": {
+    "Container": "EMPTY",
+    "Status": "CORRUPT"
+  },
+  "unknown.xlsx": {
+    "Container": "UNKNOWN",
+    "Status": "UNKNOWN"
+  },
+  "irm.xlsx": {
+    "Container": "CFB",
+    "Status": "PROTECTED",
+    "IrmProtected": true,
+    "PasswordEncrypted": false
+  },
+  "password.xlsx": {
+    "Container": "CFB",
+    "Status": "PASSWORD",
+    "PasswordEncrypted": true,
+    "IrmProtected": false
+  },
+  "legacy.xls": {
+    "Container": "CFB",
+    "Status": "OK",
+    "DocKind": "Excel"
+  },
+  "legacy.doc": {
+    "Container": "CFB",
+    "Status": "OK",
+    "DocKind": "Word"
+  },
+  "legacy.ppt": {
+    "Container": "CFB",
+    "Status": "OK",
+    "DocKind": "PowerPoint"
+  },
+  "legacy_truncated.xls": {
+    "Container": "CFB",
+    "Status": "CORRUPT"
+  }
+}
