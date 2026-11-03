@@ -52,17 +52,8 @@ jobs:
       - name: GUI smoke test and screenshot
         shell: powershell
         run: |
-          $png = Join-Path $env:RUNNER_TEMP 'unlocked-gui.png'
-          .\tests\Show-GuiPreview.ps1 -OutFile $png
-          $code = $LASTEXITCODE
-          if (Test-Path $png) {
-            # 也把截圖以 base64 印在紀錄中（無法下載 artifact 時可從紀錄還原）
-            $b64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($png))
-            Write-Host "GUIPNG-BEGIN $($b64.Length)"
-            for ($i = 0; $i -lt $b64.Length; $i += 4000) { Write-Host ('GUIPNG:' + $b64.Substring($i, [Math]::Min(4000, $b64.Length - $i))) }
-            Write-Host 'GUIPNG-END'
-          }
-          exit $code
+          .\tests\Show-GuiPreview.ps1 -OutFile (Join-Path $env:RUNNER_TEMP 'unlocked-gui.png')
+          exit $LASTEXITCODE
 
       - name: Upload GUI screenshot
         if: always()
@@ -81,3 +72,30 @@ jobs:
             README.md
             config.sample.json
           if-no-files-found: error
+
+  # 只在手動執行（Actions → test → Run workflow）時：重新產生 README 用的介面截圖並提交到該分支
+  update-screenshot:
+    name: Update docs/screenshot.png
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Render GUI screenshot
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force docs | Out-Null
+          .\tests\Show-GuiPreview.ps1 -OutFile (Join-Path (Resolve-Path docs) 'screenshot.png')
+          exit $LASTEXITCODE
+
+      - name: Commit screenshot
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/screenshot.png
+          if git diff --cached --quiet; then echo "screenshot unchanged"; exit 0; fi
+          git commit -m "Update GUI screenshot [skip ci]"
+          git push
