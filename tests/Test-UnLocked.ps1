@@ -63,6 +63,10 @@ foreach ($case in $expected.PSObject.Properties) {
         }
     }
 }
+$lab = Format-InspectionSummary (Invoke-UnLockedInspection (Join-Path $fixtures 'irm_label.xlsx'))
+Assert-That ($lab.Contains('Internal - Internal (Contoso)') -and $lab.Contains('加密') -and $lab.Contains('Azure RMS')) 'IRM 標籤加密來源摘要' $lab
+$adr = Format-InspectionSummary (Invoke-UnLockedInspection (Join-Path $fixtures 'irm_adrms.xlsx'))
+Assert-That ($adr.Contains('AD RMS') -and $adr.Contains('rms.contoso.example')) 'AD RMS 來源摘要' $adr
 $ok = Invoke-UnLockedInspection (Join-Path $fixtures 'valid.xlsx')
 Assert-That ($ok.Issues.Count -eq 0 -and $ok.Warnings.Count -eq 0) 'valid.xlsx 沒有任何問題或警告' ($ok.IssueText + $ok.WarningText)
 Assert-That ((Invoke-UnLockedInspection (Join-Path $fixtures 'not-exist.xlsx')).Status -eq 'ERROR') '不存在的檔案 → ERROR'
@@ -114,6 +118,7 @@ Assert-That ($byName['valid.xlsx'].Result -eq '正常') 'valid.xlsx → 正常'
 Assert-That ($byName['crc.xlsx'].Result -eq '需修復') 'crc.xlsx → 需修復'
 Assert-That ($byName['password.xlsx'].Result -eq '略過') 'password.xlsx → 略過'
 Assert-That ($byName['irm.xlsx'].IrmBefore -eq '受限制') 'irm.xlsx → 受限制'
+Assert-That ($byName['irm_label.xlsx'].LabelBefore -eq 'Internal - Internal (Contoso)') 'IRM 檔案的原標籤取自容器內的標籤資訊' $byName['irm_label.xlsx'].LabelBefore
 $csv = Join-Path ([IO.Path]::GetTempPath()) ('unlocked_test_{0}.csv' -f [guid]::NewGuid().ToString('N'))
 Export-UnLockReport -Results $res -Path $csv
 Assert-That (@(Import-Csv -LiteralPath $csv -Encoding UTF8).Count -eq $fixtureCount) '匯出 CSV 報表'

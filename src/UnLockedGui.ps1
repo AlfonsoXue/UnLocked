@@ -386,6 +386,14 @@ function Start-UnLockedRun {
         if ($script:ui.OptLabel.Checked -and -not $label) {
             Show-Info "尚未設定目標敏感度標籤。`n`n請先在 Office 中把一個檔案手動設為「Public\Public-Edit」並儲存，再按「從範例檔讀取…」選擇該檔案。" 'Warning'; return
         }
+        if ($script:ui.OptIrm.Checked -and -not ($script:ui.OptLabel.Checked -and $label)) {
+            $msg = "尚未設定目標敏感度標籤。`n`n" +
+            "‧ 受敏感度標籤（例如 Internal）加密的檔案，只移除限制存取無法解除加密。`n" +
+            "‧ 沒有標籤的檔案存檔時，Office 可能依公司原則自動套用預設標籤並重新加密。`n`n" +
+            "建議先在 Office 把一個檔案設為 Public\Public-Edit，再按「從範例檔讀取…」設定目標標籤。`n`n仍要繼續嗎？"
+            $ans = [System.Windows.Forms.MessageBox]::Show($script:ui.Form, $msg, 'UnLocked', 'YesNo', 'Warning')
+            if ($ans -ne 'Yes') { return }
+        }
         if ($script:ui.OptFolder.Checked) {
             $out = $script:ui.OutputBox.Text.Trim()
             if (-not $out) { Show-Info '請先在「③ 匯出路徑」選擇匯出資料夾。' 'Warning'; return }

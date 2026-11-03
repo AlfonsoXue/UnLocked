@@ -28,6 +28,15 @@ namespace UnLocked
         public string LabelSiteId = "";
         public string LabelMethod = "";
         public int PartCount;
+        /// <summary>標籤的 contentBits（-1 = 未知）；8 = 標籤含加密</summary>
+        public int LabelContentBits = -1;
+        /// <summary>保護名稱（標籤／範本名稱，取自 IRM 發佈授權）</summary>
+        public string ProtectionName = "";
+        /// <summary>權限伺服器主機名稱</summary>
+        public string RmsServer = "";
+        /// <summary>Azure RMS / AD RMS</summary>
+        public string RmsKind = "";
+        public bool LabelEncrypts { get { return LabelContentBits >= 0 && (LabelContentBits & 8) != 0; } }
         public List<string> Issues = new List<string>();
         public List<string> Warnings = new List<string>();
 
@@ -44,6 +53,8 @@ namespace UnLocked
 
         static readonly Regex GuidRegex = new Regex(
             "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}");
+        static readonly Regex PlNameRegex = new Regex(":NAME (.+?):DESCRIPTION");
+        static readonly Regex RmsUrlRegex = new Regex("https?://([^/<\"\\s]+)/_wmcs", RegexOptions.IgnoreCase);
         static readonly Regex MsipRegex = new Regex(
             "^MSIP_Label_([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})_(\\w+)$");
 
@@ -459,22 +470,7 @@ namespace UnLocked
             foreach (KeyValuePair<string, byte[]> kv in keep)
             {
                 if (!kv.Key.EndsWith("LabelInfo.xml", StringComparison.OrdinalIgnoreCase)) continue;
-                XmlDocument d = TryLoad(kv.Value);
-                if (d == null) continue;
-                foreach (XmlNode node in d.GetElementsByTagName("*"))
-                {
-                    XmlElement el = node as XmlElement;
-                    if (el == null || el.LocalName != "label") continue;
-                    if (el.GetAttribute("removed") == "1") continue;
-                    if (el.GetAttribute("enabled") == "0") continue;
-                    Match m = GuidRegex.Match(el.GetAttribute("id"));
-                    if (!m.Success) continue;
-                    r.LabelId = m.Value.ToLowerInvariant();
-                    Match s = GuidRegex.Match(el.GetAttribute("siteId"));
-                    if (s.Success) r.LabelSiteId = s.Value.ToLowerInvariant();
-                    r.LabelMethod = el.GetAttribute("method");
-                    break;
-                }
+                if (ParseLabelList(kv.Value, r)) break;
             }
 
             // 舊版格式：docProps/custom.xml 的 MSIP_Label_<GUID>_<欄位>
@@ -506,6 +502,53 @@ namespace UnLocked
                 if (r.LabelMethod.Length == 0 && f.TryGetValue("Method", out v)) r.LabelMethod = v;
                 break;
             }
+        }
+
+        /// <summary>解析 clbl:labelList（docMetadata/LabelInfo.xml 或 IRM 容器內的 LabelInfo 資料流）。</summary>
+        static bool ParseLabelList(byte[] xml, InspectResult r)
+        {
+            XmlDocument d = TryLoad(xml);
+            if (d == null) return false;
+            foreach (XmlNode node in d.GetElementsByTagName("*"))
+            {
+                XmlElement el = node as XmlElement;
+                if (el == null || el.LocalName != "label") continue;
+                if (el.GetAttribute("removed") == "1") continue;
+                if (el.GetAttribute("enabled") == "0") continue;
+                Match m = GuidRegex.Match(el.GetAttribute("id"));
+                if (!m.Success) continue;
+                r.LabelId = m.Value.ToLowerInvariant();
+                Match s = GuidRegex.Match(el.GetAttribute("siteId"));
+                if (s.Success) r.LabelSiteId = s.Value.ToLowerInvariant();
+                r.LabelMethod = el.GetAttribute("method");
+                int bits;
+                if (int.TryParse(el.GetAttribute("contentBits"), out bits)) r.LabelContentBits = bits;
+                return true;
+            }
+            return false;
+        }
+
+        /// <summary>從 IRM 發佈授權 (XrML) 取出保護名稱與權限伺服器。只讀取未加密的中繼資料。</summary>
+        static void ParsePublishingLicense(byte[] b, InspectResult r)
+        {
+            string t16 = Encoding.Unicode.GetString(b);
+            string t8 = Encoding.UTF8.GetString(b);
+            string t = CountChar(t16, '<') > CountChar(t8, '<') ? t16 : t8;
+            Match m = PlNameRegex.Match(t);
+            if (m.Success) r.ProtectionName = m.Groups[1].Value.Trim();
+            Match u = RmsUrlRegex.Match(t);
+            if (u.Success)
+            {
+                r.RmsServer = u.Groups[1].Value.ToLowerInvariant();
+                r.RmsKind = r.RmsServer.EndsWith("aadrm.com", StringComparison.OrdinalIgnoreCase) ? "Azure RMS" : "AD RMS";
+            }
+        }
+
+        static int CountChar(string s, char c)
+        {
+            int n = 0;
+            foreach (char ch in s) if (ch == c) n++;
+            return n;
         }
 
         static bool IsXmlPart(string name)
@@ -626,6 +669,8 @@ namespace UnLocked
             }
 
             List<string> names = new List<string>();
+            Dictionary<string, long[]> streams = new Dictionary<string, long[]>();   // 名稱 → { 起始磁區, 大小 }
+            long rootStart = ENDOFCHAIN, rootSize = 0;
             bool rootOk = false;
             int entriesPerSector = ss / 128;
             int index = 0;
@@ -651,11 +696,14 @@ namespace UnLocked
                     if (index == 0)
                     {
                         rootOk = type == 5;
+                        rootStart = start;
+                        rootSize = size;
                         if (size > 0 && Chain(fat, start, nSectors, out err) == null)
                             AddIssue(r, "OLE 迷你資料流磁區鏈損毀：" + err);
                         continue;
                     }
                     names.Add(name);
+                    if (type == 2 && !streams.ContainsKey(name)) streams[name] = new long[] { start, size };
                     if (type == 2 && size >= 4096)
                     {
                         List<uint> chain = Chain(fat, start, nSectors, out err);
@@ -678,6 +726,95 @@ namespace UnLocked
             }
             if (hasDrm || (hasEncPkg && !hasEncInfo)) r.IrmProtected = true;
             else if (hasEncInfo) r.PasswordEncrypted = true;
+
+            // IRM 容器內未加密的中繼資料：敏感度標籤 (LabelInfo) 與發佈授權 (\x06Primary)
+            if (r.IrmProtected && r.Issues.Count == 0)
+            {
+                CfbReader rd = new CfbReader();
+                rd.Fs = fs; rd.Fat = fat; rd.NSectors = nSectors; rd.SectorSize = ss;
+                rd.MiniFatStart = U32(h, 0x3C); rd.MiniCutoff = U32(h, 0x38); rd.MiniSectorSize = 1 << U16(h, 0x20);
+                rd.RootStart = (uint)rootStart; rd.RootSize = rootSize;
+                long[] st;
+                if (streams.TryGetValue("LabelInfo", out st))
+                {
+                    byte[] li = rd.Read((uint)st[0], st[1], 256 * 1024);
+                    if (li != null) ParseLabelList(li, r);
+                }
+                if (streams.TryGetValue("\u0006Primary", out st))
+                {
+                    byte[] pl = rd.Read((uint)st[0], st[1], 4 * 1024 * 1024);
+                    if (pl != null) ParsePublishingLicense(pl, r);
+                }
+                if (r.LabelId.Length > 0 && r.LabelName.Length == 0) r.LabelName = r.ProtectionName;
+            }
+        }
+
+        /// <summary>讀取 OLE 資料流（含小於迷你資料流門檻、存放在迷你資料流中的資料）。失敗時回傳 null。</summary>
+        class CfbReader
+        {
+            public FileStream Fs;
+            public uint[] Fat;
+            public long NSectors;
+            public int SectorSize;
+            public uint MiniFatStart;
+            public uint MiniCutoff;
+            public int MiniSectorSize;
+            public uint RootStart;
+            public long RootSize;
+
+            public byte[] Read(uint start, long size, int maxBytes)
+            {
+                try
+                {
+                    if (size <= 0 || size > maxBytes) return null;
+                    string err;
+                    if (size >= MiniCutoff)
+                    {
+                        List<uint> chain = Chain(Fat, start, NSectors, out err);
+                        return chain == null ? null : ReadChain(chain, size);
+                    }
+                    List<uint> rootChain = Chain(Fat, RootStart, NSectors, out err);
+                    List<uint> miniFatChain = Chain(Fat, MiniFatStart, NSectors, out err);
+                    if (rootChain == null || miniFatChain == null || RootSize > 64L * 1024 * 1024) return null;
+                    byte[] mini = ReadChain(rootChain, RootSize);
+                    byte[] mf = ReadChain(miniFatChain, (long)miniFatChain.Count * SectorSize);
+                    if (mini == null || mf == null) return null;
+                    int nMini = mf.Length / 4;
+                    byte[] result = new byte[size];
+                    long done = 0;
+                    uint s = start;
+                    int guard = 0;
+                    while (done < size)
+                    {
+                        if (s >= nMini || guard++ > nMini) return null;
+                        long off = (long)s * MiniSectorSize;
+                        int take = (int)Math.Min(MiniSectorSize, size - done);
+                        if (off + take > mini.Length) return null;
+                        Array.Copy(mini, off, result, done, take);
+                        done += take;
+                        s = U32(mf, (int)s * 4);
+                    }
+                    return result;
+                }
+                catch (Exception) { return null; }
+            }
+
+            byte[] ReadChain(List<uint> chain, long size)
+            {
+                if (size > int.MaxValue) return null;
+                byte[] result = new byte[size];
+                long done = 0;
+                foreach (uint sid in chain)
+                {
+                    if (done >= size) break;
+                    byte[] sec = ReadSector(Fs, sid, SectorSize);
+                    if (sec == null) return null;
+                    int take = (int)Math.Min(SectorSize, size - done);
+                    Array.Copy(sec, 0, result, done, take);
+                    done += take;
+                }
+                return done == size ? result : null;
+            }
         }
 
         static List<uint> Chain(uint[] fat, uint start, long nSectors, out string err)

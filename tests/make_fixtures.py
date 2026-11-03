@@ -134,8 +134,9 @@ FREESECT, ENDOFCHAIN, FATSECT, NOSTREAM = 0xFFFFFFFF, 0xFFFFFFFE, 0xFFFFFFFD, 0x
 
 
 def write_cfb(name, tree):
-    """tree: [(name, bytes) | (name, [children...])] 為根目錄下的項目。"""
-    entries = []  # dict(name, type, data, children)
+    """tree: [(name, bytes) | (name, [children...])] 為根目錄下的項目。
+    小於 4096 位元組的資料流放在迷你資料流（與 Office 實際的檔案相同）。"""
+    entries = []
 
     def add(node_name, payload):
         idx = len(entries)
@@ -153,27 +154,48 @@ def write_cfb(name, tree):
     entries.append({"name": "Root Entry", "type": 5, "data": b"", "children": []})
     entries[0]["children"] = [add(n, p) for n, p in tree]
 
-    ss = 512
-    dir_sectors = (len(entries) * 128 + ss - 1) // ss
-    data_start = 1 + dir_sectors
-    next_sector = data_start
-    fat = [FATSECT] + [ENDOFCHAIN if i == dir_sectors - 1 else 1 + i + 1 for i in range(dir_sectors)]
-    body = b""
+    ss, mss = 512, 64
+    # 迷你資料流
+    mini = b""
+    minifat = []
     for e in entries:
-        if e["type"] != 2:
-            e["start"] = ENDOFCHAIN
-            continue
-        assert len(e["data"]) >= 4096
-        n = (len(e["data"]) + ss - 1) // ss
-        e["start"] = next_sector
+        if e["type"] == 2 and len(e["data"]) < 4096:
+            n = max(1, (len(e["data"]) + mss - 1) // mss)
+            e["start"] = len(mini) // mss
+            for k in range(n):
+                minifat.append(ENDOFCHAIN if k == n - 1 else e["start"] + k + 1)
+            mini += e["data"] + b"\0" * (n * mss - len(e["data"]))
+
+    dir_sectors = (len(entries) * 128 + ss - 1) // ss
+    fat = [FATSECT]
+    fat += [ENDOFCHAIN if i == dir_sectors - 1 else 1 + i + 1 for i in range(dir_sectors)]
+    body = b""
+
+    def alloc(data):
+        nonlocal body
+        n = (len(data) + ss - 1) // ss
+        first = len(fat)
         for k in range(n):
-            fat.append(ENDOFCHAIN if k == n - 1 else next_sector + k + 1)
-        next_sector += n
-        body += e["data"] + b"\0" * (n * ss - len(e["data"]))
+            fat.append(ENDOFCHAIN if k == n - 1 else first + k + 1)
+        body += data + b"\0" * (n * ss - len(data))
+        return first
+
+    mini_start = alloc(mini) if mini else ENDOFCHAIN
+    minifat_bytes = struct.pack("<%dI" % len(minifat), *minifat) if minifat else b""
+    if minifat:
+        minifat_bytes += struct.pack("<I", FREESECT) * ((ss // 4) - len(minifat) % (ss // 4) if len(minifat) % (ss // 4) else 0)
+    minifat_start = alloc(minifat_bytes) if minifat else ENDOFCHAIN
+    minifat_count = len(minifat_bytes) // ss
+    for e in entries:
+        if e["type"] == 2 and len(e["data"]) >= 4096:
+            e["start"] = alloc(e["data"])
+        elif e["type"] != 2:
+            e["start"] = ENDOFCHAIN
+    entries[0]["start"] = mini_start
+    entries[0]["data"] = mini      # 根目錄的大小 = 迷你資料流大小
     assert len(fat) <= ss // 4
     fat += [FREESECT] * (ss // 4 - len(fat))
 
-    # 兄弟節點以右側鏈結串起（全部為黑色節點，結構合法）
     for e in entries:
         e.setdefault("left", NOSTREAM)
         e.setdefault("right", NOSTREAM)
@@ -196,7 +218,7 @@ def write_cfb(name, tree):
 
     header = b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1" + b"\0" * 16
     header += struct.pack("<HHHHH", 0x3E, 3, 0xFFFE, 9, 6) + b"\0" * 6
-    header += struct.pack("<IIIIIIIII", 0, 1, 1, 0, 4096, ENDOFCHAIN, 0, ENDOFCHAIN, 0)
+    header += struct.pack("<IIIIIIIII", 0, 1, 1, 0, 4096, minifat_start, minifat_count, ENDOFCHAIN, 0)
     header += struct.pack("<I", 0) + struct.pack("<I", FREESECT) * 108
     assert len(header) == 512
     data = header + struct.pack("<%dI" % (ss // 4), *fat) + d + body
@@ -204,6 +226,15 @@ def write_cfb(name, tree):
     with open(path, "wb") as f:
         f.write(data)
     return path
+
+
+def publishing_license(name, host):
+    """模擬 IRM 發佈授權 (XrML，UTF-16LE)：只含本工具會讀取的中繼資料。"""
+    xml = ('<?xml version="1.0"?><XrML><BODY type="Microsoft Rights Label"><ISSUER><OBJECT type="DRM-Server">'
+           '<NAME>DRM Server Cluster</NAME><ADDRESS type="URL">https://%s/_wmcs/licensing</ADDRESS></OBJECT></ISSUER>'
+           '<WORK><METADATA><NAME>LCID 1033:NAME %s:DESCRIPTION 測試用範本;</NAME></METADATA></WORK></BODY></XrML>'
+           % (host, name))
+    return b"\x08\0\0\0" + xml.encode("utf-16-le") + b"\0" * 64
 
 
 def main():
@@ -270,6 +301,32 @@ def main():
                            ("\x06DataSpaces", [("DataSpaceMap", b"\x08" * 4096),
                                                ("DataSpaceInfo", [("DRMEncryptedDataSpace", b"\x01" * 4096)])])])
     expected["irm.xlsx"] = {"Container": "CFB", "Status": "PROTECTED", "IrmProtected": True, "PasswordEncrypted": False}
+
+    label_xml = ('<?xml version="1.0" encoding="utf-8" standalone="yes"?><clbl:labelList '
+                 'xmlns:clbl="http://schemas.microsoft.com/office/2020/mipLabelMetadata"><clbl:label id="{%s}" '
+                 'enabled="1" method="Standard" siteId="{%s}" contentBits="8" removed="0" /></clbl:labelList>'
+                 % (LABEL_ID, SITE_ID)).encode("utf-8")
+    write_cfb("irm_label.xlsx", [
+        ("EncryptedPackage", blob),
+        ("\x06DataSpaces", [
+            ("DataSpaceMap", b"\x08" * 104),
+            ("DataSpaceInfo", [("DRMEncryptedDataSpace", b"\x01" * 56)]),
+            ("TransformInfo", [
+                ("DRMEncryptedTransform", [("\x06Primary", publishing_license("Internal - Internal (Contoso)", "%s.rms.ap.aadrm.com" % SITE_ID))]),
+                ("LabelInfo", label_xml)])])])
+    expected["irm_label.xlsx"] = {"Container": "CFB", "Status": "PROTECTED", "IrmProtected": True, "LabelId": LABEL_ID,
+                                  "LabelSiteId": SITE_ID, "LabelMethod": "Standard", "LabelEncrypts": True,
+                                  "LabelName": "Internal - Internal (Contoso)", "ProtectionName": "Internal - Internal (Contoso)",
+                                  "RmsKind": "Azure RMS", "RmsServer": "%s.rms.ap.aadrm.com" % SITE_ID}
+
+    write_cfb("irm_adrms.xlsx", [
+        ("EncryptedPackage", blob),
+        ("\x06DataSpaces", [
+            ("DataSpaceMap", b"\x08" * 104),
+            ("DataSpaceInfo", [("DRMEncryptedDataSpace", b"\x01" * 56)]),
+            ("TransformInfo", [("DRMEncryptedTransform", [("\x06Primary", publishing_license("ADRMS template", "rms.contoso.example"))])])])])
+    expected["irm_adrms.xlsx"] = {"Container": "CFB", "Status": "PROTECTED", "IrmProtected": True, "LabelId": "",
+                                  "LabelEncrypts": False, "RmsKind": "AD RMS", "RmsServer": "rms.contoso.example"}
 
     write_cfb("password.xlsx", [("EncryptionInfo", b"\x04" * 4096), ("EncryptedPackage", blob),
                                 ("\x06DataSpaces", [("DataSpaceInfo", [("StrongEncryptionDataSpace", b"\x02" * 4096)])])])

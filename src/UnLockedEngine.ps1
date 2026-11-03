@@ -193,8 +193,11 @@ function Invoke-UnLockFile {
         if (-not $doc) {
             $why = if ($openError) { Get-FriendlyError $openError } else { '未知原因' }
             if ($pre.IrmProtected) {
-                $why += '。受 IRM 保護的檔案無法由程式開啟，可能原因：(1) 需要登入或選擇權限帳戶——請先用 Excel／Word／PowerPoint 手動開啟一次此檔案；' +
-                '(2) 您的帳戶對此檔案沒有開啟權限；(3) 公司的 DRM／資安軟體禁止程式自動開啟受保護的檔案（請洽資訊部門）'
+                $src = Format-ProtectionSource $pre
+                $why += ('。受 IRM 保護的檔案{0}無法由程式開啟，可能原因：' -f $src) +
+                '(1) 您對此檔案的權限不包含「以程式設計方式存取」，Office 會拒絕程式開啟——請用 Excel 手動開啟此檔案，到「檔案 → 資訊 → 檢視權限」確認；' +
+                '(2) 需要登入或選擇權限帳戶——請先手動開啟一次此檔案；(3) 您的帳戶沒有開啟權限；' +
+                '(4) 公司的 DRM／資安軟體禁止程式自動開啟受保護的檔案。(1)(3)(4) 需請檔案擁有者或資訊部門協助'
             }
             if ($isCheck) {
                 $r.Result = if ($pre.IrmProtected) { '無法開啟' } else { '需修復' }
@@ -221,7 +224,12 @@ function Invoke-UnLockFile {
 
         # ---- 3. 讀取目前狀態 -------------------------------------------
         $labelBefore = Get-DocumentLabel $doc
-        if ($labelBefore) { $r.LabelBefore = Resolve-UnLockLabelName $labelBefore.Id $labelBefore.Name $Options.KnownLabels }
+        if ($labelBefore -and $labelBefore.Id) {
+            $name = if ($labelBefore.Name) { $labelBefore.Name } else { $pre.LabelName }
+            $r.LabelBefore = Resolve-UnLockLabelName $labelBefore.Id $name $Options.KnownLabels
+        }
+        elseif ($labelBefore -and -not $pre.LabelId) { $r.LabelBefore = '(無標籤)' }
+        $currentLabelId = if ($labelBefore -and $labelBefore.Id) { $labelBefore.Id } else { $pre.LabelId }
         $irmBefore = Get-DocumentIrm $doc
         if ($null -ne $irmBefore) { $r.IrmBefore = if ($irmBefore) { '受限制' } else { '無限制' } }
 
@@ -238,7 +246,7 @@ function Invoke-UnLockFile {
             if ($script:LegacyExtensions -contains $ext) {
                 $notes.Add("舊版格式 ($ext) 不支援敏感度標籤，已略過標籤設定")
             }
-            elseif ($labelBefore -and $labelBefore.Id -eq $target.Id) {
+            elseif ($currentLabelId -and $currentLabelId -eq $target.Id) {
                 $r.LabelAfter = $target.Name
                 Send-UnLockEvent $Sync 'log' ('  標籤已是「' + $target.Name + '」')
             }
@@ -344,7 +352,20 @@ function Invoke-UnLockFile {
                 }
                 if ($Options.RemoveIrm -and $post.IrmProtected -and $r.IrmAfter -notlike '*標籤保護*') {
                     $r.IrmAfter = '仍受限制'
-                    $notes.Add('輸出檔仍受 IRM 保護')
+                    if ($post.LabelId -and $post.LabelEncrypts) {
+                        $pname = Resolve-UnLockLabelName $post.LabelId $post.LabelName $Options.KnownLabels
+                        $r.LabelAfter = $pname
+                        if (-not ($Options.SetLabel -and $target)) {
+                            $notes.Add(('輸出檔又被加密：存檔時 Office 依公司原則自動套用了會加密的標籤「{0}」（檔案沒有標籤時會套用預設標籤）。' +
+                                    '請在「② 處理選項」設定目標標籤（例如 Public\Public-Edit，可用「從範例檔讀取…」取得）後再處理一次') -f $pname)
+                        }
+                        else {
+                            $notes.Add(('輸出檔的標籤「{0}」會加密，請確認目標標籤是否為不加密的標籤（例如 Public\Public-Edit）' -f $pname))
+                        }
+                    }
+                    else {
+                        $notes.Add('輸出檔仍受 IRM 保護' + (Format-ProtectionSource $post))
+                    }
                     $warn = $true
                 }
             }
@@ -428,6 +449,9 @@ function Invoke-UnLockBatch {
         Send-UnLockEvent $Sync 'log' ("開始{0} {1} 個檔案" -f $modeText, $Items.Count)
         if ($Options.Mode -ne 'Check') {
             if ($Options.SetLabel -and $Options.Label) { Send-UnLockEvent $Sync 'log' ('目標標籤：' + $Options.Label.Name + ' (' + $Options.Label.Id + ')') }
+            if ($Options.RemoveIrm -and -not ($Options.SetLabel -and $Options.Label)) {
+                Send-UnLockEvent $Sync 'log' '注意：未設定目標標籤。若公司原則會為沒有標籤的檔案自動套用預設標籤（例如會加密的 Internal），存檔後檔案可能又被加密。' -Level Warn
+            }
             $outText = if ($Options.OutputMode -eq 'InPlace') { '覆寫原檔' } else { '另存至 ' + $Options.OutputFolder }
             Send-UnLockEvent $Sync 'log' ('輸出方式：' + $outText)
         }

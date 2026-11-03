@@ -230,7 +230,26 @@ function Format-InspectionSummary {
     if (-not $text) { $text = $Inspection.Status }
     if ($Inspection.Issues.Count -gt 0) { $text += '：' + $Inspection.IssueText }
     elseif ($Inspection.Warnings.Count -gt 0) { $text += '（' + $Inspection.WarningText + '）' }
+    elseif ($Inspection.Status -eq 'PROTECTED') {
+        $text += Format-ProtectionSource $Inspection
+    }
     $text
+}
+
+function Format-ProtectionSource {
+    <# 例：（標籤「Internal - Internal (EVA)」加密，Azure RMS）或（AD RMS：rms.contoso.com） #>
+    param($Inspection)
+    $d = @()
+    if ($Inspection.LabelId) {
+        $n = if ($Inspection.LabelName) { $Inspection.LabelName } else { $Inspection.LabelId }
+        $d += ('標籤「{0}」{1}' -f $n, $(if ($Inspection.LabelEncrypts) { '加密' } else { '' }))
+        if ($Inspection.RmsKind) { $d += $Inspection.RmsKind }
+    }
+    elseif ($Inspection.RmsKind) {
+        $d += ('{0}：{1}' -f $Inspection.RmsKind, $Inspection.RmsServer)
+    }
+    if ($d.Count) { return '（' + ($d -join '，') + '）' }
+    return ''
 }
 
 function Get-UnLockedRelativePath {

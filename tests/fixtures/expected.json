@@ -68,6 +68,28 @@
     "IrmProtected": true,
     "PasswordEncrypted": false
   },
+  "irm_label.xlsx": {
+    "Container": "CFB",
+    "Status": "PROTECTED",
+    "IrmProtected": true,
+    "LabelId": "6f1c2c49-6b5a-4d1e-9a51-7a3c1e0d4b21",
+    "LabelSiteId": "0e6c3c7a-1b2d-4c5e-8f90-a1b2c3d4e5f6",
+    "LabelMethod": "Standard",
+    "LabelEncrypts": true,
+    "LabelName": "Internal - Internal (Contoso)",
+    "ProtectionName": "Internal - Internal (Contoso)",
+    "RmsKind": "Azure RMS",
+    "RmsServer": "0e6c3c7a-1b2d-4c5e-8f90-a1b2c3d4e5f6.rms.ap.aadrm.com"
+  },
+  "irm_adrms.xlsx": {
+    "Container": "CFB",
+    "Status": "PROTECTED",
+    "IrmProtected": true,
+    "LabelId": "",
+    "LabelEncrypts": false,
+    "RmsKind": "AD RMS",
+    "RmsServer": "rms.contoso.example"
+  },
   "password.xlsx": {
     "Container": "CFB",
     "Status": "PASSWORD",
