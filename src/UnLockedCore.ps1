@@ -7,7 +7,8 @@
 #>
 
 $script:SrcDir = $PSScriptRoot
-$script:UnLockedRoot = Split-Path -Parent $PSScriptRoot
+# 工具根目錄（放共用 config.json 的地方）：以 UnLocked.exe 執行時由啟動程式設定為 exe 所在資料夾
+$script:UnLockedRoot = if ($env:UNLOCKED_HOME -and (Test-Path -LiteralPath $env:UNLOCKED_HOME)) { $env:UNLOCKED_HOME } else { Split-Path -Parent $PSScriptRoot }
 $script:DummyPassword = 'UnLocked#NoPassword#9f2c'
 $script:GuidPattern = '^\{?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\}?$'
 

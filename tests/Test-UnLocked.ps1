@@ -30,7 +30,7 @@ foreach ($f in Get-ChildItem -Path $src, $PSScriptRoot -Filter *.ps1) {
 }
 
 Write-Host '== 檔案編碼（Windows PowerShell 5.1 需要 UTF-8 BOM 才能正確讀取中文） ==' -ForegroundColor Cyan
-foreach ($f in Get-ChildItem -Path $src, $PSScriptRoot -Include *.ps1, *.cs -Recurse) {
+foreach ($f in Get-ChildItem -Path $src, $PSScriptRoot, (Join-Path $root 'build') -Include *.ps1, *.cs -Recurse) {
     $b = [IO.File]::ReadAllBytes($f.FullName)
     Assert-That ($b.Length -ge 3 -and $b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF) ("BOM: " + $f.Name)
 }

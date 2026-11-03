@@ -1,7 +1,8 @@
 # 個人／公司設定（含標籤 GUID），不要提交
 config.json
 
-# 執行產生的檔案
+# 執行／建置產生的檔案
+dist/
 *.log
 _UnLocked_Output/
 _UnLocked_Backup_*/

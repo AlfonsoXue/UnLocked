@@ -18,3 +18,42 @@ jobs:
           $PSVersionTable.PSVersion
           .\tests\Test-UnLocked.ps1
           exit $LASTEXITCODE
+
+  build-exe:
+    name: Build UnLocked.exe
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        shell: cmd
+        run: build.bat
+
+      - name: Smoke test (command-line mode, check only)
+        shell: powershell
+        run: |
+          $fx  = (Resolve-Path tests\fixtures).Path
+          $csv = Join-Path $env:RUNNER_TEMP 'smoke.csv'
+          $out = Join-Path $env:RUNNER_TEMP 'out.txt'
+          $err = Join-Path $env:RUNNER_TEMP 'err.txt'
+          $p = Start-Process -FilePath (Resolve-Path dist\UnLocked.exe) -Wait -PassThru -NoNewWindow `
+               -ArgumentList @('-NoGui', '-CheckOnly', "`"$fx`"", '-ReportPath', "`"$csv`"") `
+               -RedirectStandardOutput $out -RedirectStandardError $err
+          Get-Content $out -Encoding UTF8 -ErrorAction SilentlyContinue
+          Get-Content $err -Encoding UTF8 -ErrorAction SilentlyContinue
+          if ($p.ExitCode -ne 0) { throw "UnLocked.exe exit code $($p.ExitCode)" }
+          $rows = @(Import-Csv -LiteralPath $csv -Encoding UTF8)
+          if ($rows.Count -ne 15) { throw "expected 15 report rows, got $($rows.Count)" }
+          $extracted = Join-Path $env:LOCALAPPDATA 'UnLocked\app'
+          Get-ChildItem $extracted -Recurse -File | Select-Object FullName, Length | Format-Table -AutoSize
+          "UnLocked.exe smoke test passed: $($rows.Count) files checked"
+
+      - name: Upload UnLocked.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: UnLocked-exe
+          path: |
+            dist/UnLocked.exe
+            README.md
+            config.sample.json
+          if-no-files-found: error

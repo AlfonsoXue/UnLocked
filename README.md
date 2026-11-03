@@ -44,6 +44,32 @@
    - 也可以把檔案或資料夾直接拖曳到 `UnLocked.bat` 上，會自動加入清單。
 3. 建議處理前先關閉所有 Excel / Word / PowerPoint 視窗。
 
+### 使用 UnLocked.exe（免 .bat）
+
+也可以把程式打包成單一個 **`UnLocked.exe`**，雙擊就能開啟，不會出現黑色主控台視窗。
+`UnLocked.exe` 內含全部指令碼，在本程序內以 Windows 內建的 PowerShell 引擎執行，第一次啟動時會把指令碼解出到 `%LOCALAPPDATA%\UnLocked\app\`。
+
+**方法一：用 VS Code 建置（推薦）**
+
+1. 用 VS Code 開啟 UnLocked 資料夾（檔案 → 開啟資料夾）。
+2. 按 **`Ctrl+Shift+B`**（或「終端機 → 執行建置工作」→「建置 UnLocked.exe」）。
+3. 完成後在 **`dist\UnLocked.exe`** 取得執行檔。
+
+> 建置使用 Windows 內建的 C# 編譯器（.NET Framework 4.x 的 `csc.exe`），**不需要安裝 Visual Studio 或 .NET SDK**。
+> VS Code 中另有「執行測試」與「建置並執行 UnLocked.exe」工作可用（終端機 → 執行工作）。
+
+**方法二：直接雙擊 `build.bat`**，結果同樣在 `dist\UnLocked.exe`。
+
+**方法三：從 GitHub 下載**：每次推送程式碼後，GitHub Actions 會自動建置並測試，在該次執行頁面的 **Artifacts → `UnLocked-exe`** 即可下載。
+
+注意事項：
+
+- 修改 `src\` 內的指令碼後要重新建置，exe 才會包含新的內容。
+- 要讓同事共用標籤設定，把 `config.json` 放在 `UnLocked.exe` 同一個資料夾即可。
+- 命令列模式一樣可用；因為 exe 是視窗程式，在 cmd 中請加 `start /wait` 才會等它執行完，例如：`start /wait UnLocked.exe -NoGui -CheckOnly "D:\RAW DATA"`。
+- 自行建置的 exe 沒有數位簽章，第一次執行時 Windows SmartScreen 可能提示「Windows 已保護您的電腦」（按「其他資訊 → 仍要執行」），公司的防毒／應用程式管控也可能攔截。正式發佈建議請 IT 以公司憑證簽章（`signtool sign`）或加入允許清單。
+- 群組原則若禁止執行 PowerShell 指令碼，exe 一樣無法執行（不會繞過公司原則）。
+
 ---
 
 ## 第一次使用：設定目標標籤
@@ -172,7 +198,10 @@ Excel 修復時可能會移除無法讀取的內容；報表的「說明」欄�
 
 ```
 UnLocked.bat             啟動程式（雙擊）
+build.bat                建置 dist\UnLocked.exe（VS Code：Ctrl+Shift+B）
 config.sample.json       設定檔範例
+build/                   exe 啟動程式原始碼、圖示、應用程式資訊清單
+.vscode/tasks.json       VS Code 建置／測試工作
 src/UnLocked.ps1         進入點（圖形介面／命令列）
 src/UnLockedGui.ps1      圖形介面
 src/UnLockedEngine.ps1   批次處理流程
@@ -192,4 +221,4 @@ python tests/make_fixtures.py
 powershell -NoProfile -ExecutionPolicy Bypass -File tests\Test-UnLocked.ps1
 ```
 
-測試不需要 Office：會檢查所有指令碼的語法與編碼、在 Windows PowerShell 5.1 下編譯 C# 類別，並用正常／各種毀損／受保護的範例檔驗證結構檢查。GitHub Actions 會在 Windows 上自動執行。
+測試不需要 Office：會檢查所有指令碼的語法與編碼、在 Windows PowerShell 5.1 下編譯 C# 類別，並用正常／各種毀損／受保護的範例檔驗證結構檢查。GitHub Actions 會在 Windows 上自動執行，並另外建置 `UnLocked.exe`、以命令列模式實際執行一次檢查做為冒煙測試。
